@@ -2,7 +2,15 @@
 # .gitignore per pipeline di bioinformatica
 # Esclude tutti i dati, mantiene solo il codice
 # ============================================
+# --- R data objects ---
+*.rds
+*.RDS
+*.Rds
 
+# --- Cartelle specifiche progetto ---
+trash/
+**/trash/
+**/res/
 # --- Dati biologici grezzi e processati ---
 *.fastq
 *.fastq.gz

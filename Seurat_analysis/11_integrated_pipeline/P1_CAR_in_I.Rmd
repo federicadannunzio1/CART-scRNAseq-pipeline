@@ -1,0 +1,786 @@
+---
+title: "P1 — Caratterizzazione delle cellule CAR+ nel prodotto di infusione (I)"
+subtitle: "Integrazione scRNA-seq + repertorio TCR | Pipeline CART functional analysis"
+author: "Federica D'Annunzio"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    self_contained: true
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  warning    = FALSE,
+  message    = FALSE,
+  fig.width  = 10,
+  fig.height = 6,
+  dpi        = 150,
+  out.width  = "100%"
+)
+```
+
+---
+
+# Introduzione
+
+## Domanda biologica
+
+Questa analisi risponde alla prima domanda della pipeline integrata:
+
+> **Quali caratteristiche trascrizionali e clonali hanno le cellule CAR+ nel prodotto di infusione (I)?**
+
+Il prodotto di infusione (I) rappresenta il punto di partenza della terapia: le caratteristiche delle CAR+ in questo momento potrebbero predire l'esito clinico.
+
+L'approccio è **agnostico per il lineage CD4/CD8**: l'annotazione CD4/CD8 da scRNA-seq è poco affidabile in questo dataset (dropout del trascritto CD4 noto in 10x Chromium, confermato dalla discrepanza FACS vs scRNA-seq). Si utilizzano invece **stati funzionali** trasversali al lineage.
+
+## Esiti clinici dei pazienti
+
+```{r outcomes-table}
+library(knitr)
+outcomes <- data.frame(
+  Paziente   = c("Bo", "Ca", "Me"),
+  CAR_in_I   = c("1.9%", "19.1%", "9.9%"),
+  CAR_in_AB  = c("22-25% (sangue + midollo)", "~0% (fallimento)", "4.9% (midollo)"),
+  Esito      = c("Espansione massiva", "Fallimento completo", "Persistenza parziale")
+)
+kable(outcomes, caption = "Clinical outcomes of the 3 patients", align = "c")
+```
+
+## Struttura dell'analisi
+
+| Sezione | Dati | Metodo |
+|---|---|---|
+| Firme geniche | Seurat (scRNA-seq) | Module scoring (AddModuleScore) per stato e tipo cellulare |
+| Proliferazione per tipo cellulare | Seurat (scRNA-seq) | Score MKI67/TOP2A/PCNA per annotation |
+| Diversità TCR | VDJ CSV (CellRanger) | Shannon entropy, Clonality |
+| Distribuzione clonale | VDJ CSV + Seurat | Rank-frequency, integrazione per-cella |
+| Fate clonale | VDJ CSV cross-referencing | Cloni I → B (CDR3 matching) |
+
+---
+
+# Setup e caricamento dati
+
+```{r load-libraries}
+suppressMessages({
+  library(Seurat)
+  library(ggplot2)
+  library(patchwork)
+  library(dplyr)
+  library(tidyr)
+  library(scales)
+  library(readr)
+  library(DT)
+  library(knitr)
+  library(ggrepel)
+  library(RColorBrewer)
+})
+```
+
+```{r define-paths}
+# ── Percorsi ────────────────────────────────────────────────
+RDS_I   <- "~/federica.dannunzio@uniroma1.it - Google Drive/Drive condivisi/caruana-project/CART/Code/Seurat_analysis/2_annotation/all_I_samples_annotated.rds"
+
+VDJ_BASE <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Data/output_allineamento_original_no_CAR_si_VDJ"
+
+EXP_DYN <- "~/federica.dannunzio@uniroma1.it - Google Drive/Drive condivisi/caruana-project/CART/Code/Seurat_analysis/clonotypes_expansion_analysis/res/res_expansion_dynamics/RISULTATI_expansion_dynamics.xlsx"
+
+# ── Definizioni biologiche ───────────────────────────────────
+PATIENT_COLORS <- c(Bo = "#E64B35", Ca = "#4DBBD5", Me = "#00A087")
+OUTCOME_LABEL  <- c(Bo = "Bo (expansion)", Ca = "Ca (failure)", Me = "Me (partial)")
+
+# T cell types: CAR- is defined as T cells without CAR (excludes monocytes, NK, plasma, erythroid, etc.)
+T_CELL_TYPES <- c(
+  "Cytotoxic CD8+ T cells", "Effector CD4+ T cells", "Memory T cells",
+  "Naive CD4+ T cells", "Naive CD8+ T cells", "Proliferating CD4+ T cells",
+  "Proliferating CD8+ T cells", "Tregs", "NKT cells", "gamma-delta T cells"
+)
+
+FUNCTIONAL_STATE_MAP <- list(
+  "Naive-like"  = c("Naive CD4+ T cells","Naive CD8+ T cells"),
+  "Memory-like" = c("Memory T cells","Th1 cells","Th2 cells","Th17 cells","Tfh cells"),
+  "Effector"    = c("Effector CD4+ T cells","Cytotoxic CD8+ T cells"),
+  "Regulatory"  = c("Tregs")
+)
+FUNCTIONAL_ORDER <- c("Naive-like","Memory-like","Effector","Regulatory")
+STATE_PALETTE    <- c("Naive-like"="#4DBBD5","Memory-like"="#00A087","Effector"="#E64B35",
+                      "Regulatory"="#F39B7F")
+
+# ── Firme geniche ────────────────────────────────────────────
+# Exhaustion = unione di Exhaustion + Tex_Terminal
+# Aggiunte Naive_like e Regulatory dalla composizione funzionale
+# Proliferazione calcolata separatamente per tipo cellulare
+SIGNATURES <- list(
+  Effector        = c("GZMB","PRF1","NKG7","GNLY","GZMA","GZMK","FGFBP2","CX3CR1"),
+  Memory_Stemness = c("TCF7","CCR7","SELL","IL7R","LEF1","KLF2","BCL2","FOXO1"),
+  Naive_like      = c("CCR7","SELL","IL7R","TCF7","LEF1","KLF2","S1PR1"),
+  Exhaustion      = c("PDCD1","LAG3","HAVCR2","TIGIT","TOX","TOX2","ENTPD1",
+                      "CTLA4","BATF","CD160","PRDM1","ZEB2"),
+  Activation      = c("CD69","CD44","TNFRSF9","IL2RA","ICOS","CD38"),
+  Tpex_StemLike   = c("TCF7","CXCR5","TOX","BCL6","SLAMF6","ID3"),
+  Regulatory      = c("FOXP3","IL2RA","CTLA4","IKZF2","TNFRSF18","TIGIT","LAYN")
+)
+
+PROLIFERATION_GENES <- c("MKI67","TOP2A","PCNA","CCNB1","STMN1","UBE2C")
+
+# Mappa campioni VDJ I-stage → paziente
+VDJ_I_MAP <- list(
+  Bo = list(folder = "2/S429_I", patient = "Bo"),
+  Ca = list(folder = "1/S151_I", patient = "Ca"),
+  Me = list(folder = "1/S345_I", patient = "Me")
+)
+
+# Mappa campioni VDJ B-stage (midollo AB)
+VDJ_B_MAP <- list(
+  Bo = list(folder = "2/S435_B", patient = "Bo"),
+  Ca = list(folder = "1/S393_B", patient = "Ca"),
+  Me = list(folder = "2/S431_B", patient = "Me")
+)
+```
+
+```{r helpers}
+map_fs <- function(cell_types) {
+  state <- rep("Other", length(cell_types))
+  for (nm in names(FUNCTIONAL_STATE_MAP))
+    state[cell_types %in% FUNCTIONAL_STATE_MAP[[nm]]] <- nm
+  state
+}
+
+get_car_status <- function(meta) {
+  for (col in c("IS_CAR_ALLIN_scREP","IS_CAR","CAR")) {
+    if (col %in% colnames(meta)) {
+      vals <- as.character(meta[[col]])
+      return(ifelse(grepl("^(YES|TRUE|yes|true|1)$", vals), "CAR+", "CAR-"))
+    }
+  }
+  rep("CAR-", nrow(meta))
+}
+
+# Legge il file VDJ corretto (gestisce il trattino nel nome e il separatore ; o ,)
+read_vdj_I <- function(folder) {
+  base <- VDJ_BASE
+  f1 <- file.path(base, folder, "vdj_t", "filtered_contig_annotations.csv")
+  f2 <- file.path(base, folder, "vdj_t", "filtered_contig_annotations-.csv")
+  f  <- if (file.exists(f1)) f1 else if (file.exists(f2)) f2 else NULL
+  if (is.null(f)) { warning("VDJ file non trovato: ", folder); return(NULL) }
+
+  first_line <- readLines(f, n = 1)
+  delim <- if (grepl(";", first_line)) ";" else ","
+  df <- read_delim(f, delim = delim, show_col_types = FALSE)
+  colnames(df) <- make.names(colnames(df))
+
+  df %>%
+    filter(
+      is_cell %in% c("true","True","TRUE",TRUE),
+      high_confidence %in% c("true","True","TRUE",TRUE),
+      tolower(as.character(productive)) == "true",
+      full_length %in% c("true","True","TRUE",TRUE),
+      chain %in% c("TRA","TRB"),
+      !is.na(cdr3), nchar(as.character(cdr3)) > 0, cdr3 != "None"
+    )
+}
+
+# Calcola metriche diversità da vettore di clonotipi
+diversity_metrics <- function(clone_vec) {
+  clone_vec <- na.omit(clone_vec[clone_vec != "" & clone_vec != "NA"])
+  n_total <- length(clone_vec)
+  if (n_total == 0) return(list(n_cells=0, n_clones=0, shannon=NA, simpson=NA, clonality=NA, pct_top1=NA))
+  tbl  <- table(clone_vec)
+  freq <- as.numeric(tbl) / n_total
+  H  <- -sum(freq * log(freq + 1e-12))
+  H_max <- log(length(tbl))
+  Si <- 1 - sum(freq^2)
+  Cl <- if (H_max > 0) 1 - H / H_max else NA
+  top1 <- max(tbl) / n_total
+  list(n_cells=n_total, n_clones=length(tbl),
+       shannon=H, simpson=Si, clonality=Cl, pct_top1=top1)
+}
+```
+
+```{r load-seurat-I}
+cat("Caricamento Seurat I...\n")
+I_samples <- readRDS(RDS_I)
+
+# Aggiungi metadati
+for (sname in names(I_samples)) {
+  meta <- I_samples[[sname]]@meta.data
+  I_samples[[sname]]$car_status <- get_car_status(meta)
+  I_samples[[sname]]$patient    <- sub("_bone_I$","", sname)
+  I_samples[[sname]]$fs         <- map_fs(as.character(meta$cell_type))
+}
+
+# Riepilogo
+summary_tbl <- do.call(rbind, lapply(names(I_samples), function(s) {
+  meta <- I_samples[[s]]@meta.data
+  data.frame(
+    Campione  = s,
+    Paziente  = unique(meta$patient),
+    Totale    = nrow(meta),
+    CAR_pos   = sum(meta$car_status == "CAR+"),
+    CAR_neg   = sum(meta$car_status == "CAR-"),
+    Perc_CAR  = round(100 * sum(meta$car_status == "CAR+") / nrow(meta), 1)
+  )
+}))
+```
+
+```{r overview-table}
+kable(summary_tbl, caption = "Overview of I samples: CAR+ and CAR- cells", align = "c")
+```
+
+---
+
+# Firme geniche (module scores) {.tabset}
+
+## Concetto
+
+Per caratterizzare le cellule CAR+ a livello trascrizionale utilizziamo **module scoring** (AddModuleScore di Seurat): per ogni firma genica si calcola il punteggio medio di espressione relativo a un set di geni di controllo di background.
+
+Le firme analizzate:
+
+| Firma | Geni chiave | Significato biologico |
+|---|---|---|
+| **Effector** | GZMB, PRF1, NKG7, CX3CR1 | Citotossicità effettrice |
+| **Memory_Stemness** | TCF7, CCR7, SELL, IL7R, LEF1 | Memoria/stemness, auto-rinnovamento |
+| **Naive_like** | CCR7, SELL, IL7R, TCF7, KLF2, S1PR1 | Fenotipo naive, uscita dal timo |
+| **Exhaustion** | PDCD1, LAG3, HAVCR2, TIGIT, TOX, CD160, PRDM1, ZEB2 | Esaurimento T cellulare (progenitore + terminale) |
+| **Activation** | CD69, CD44, TNFRSF9, CD38 | Attivazione precoce |
+| **Tpex_StemLike** | TCF7, CXCR5, TOX, BCL6 | Progenitore esausto stem-like (Tpex) |
+| **Regulatory** | FOXP3, IL2RA, CTLA4, IKZF2, TNFRSF18 | Fenotipo regolatorio / Treg |
+
+> La proliferazione (MKI67, TOP2A, PCNA, ...) è calcolata separatamente nella sezione successiva per identificare quali tipi cellulari proliferano di più.
+
+```{r compute-module-scores}
+for (sname in names(I_samples)) {
+  for (sig in names(SIGNATURES)) {
+    genes_ok <- intersect(SIGNATURES[[sig]], rownames(I_samples[[sname]]))
+    if (length(genes_ok) < 2) next
+    sc <- paste0("score_", sig)
+    I_samples[[sname]] <- AddModuleScore(
+      I_samples[[sname]], features = list(genes_ok), name = sc, seed = 42
+    )
+    I_samples[[sname]]@meta.data[[sc]] <- I_samples[[sname]]@meta.data[[paste0(sc,"1")]]
+    I_samples[[sname]]@meta.data[[paste0(sc,"1")]] <- NULL
+  }
+}
+```
+
+## Module scores per tipo cellulare
+
+```{r module-scores-by-celltype, fig.height=11, fig.width=14}
+score_cols <- paste0("score_", names(SIGNATURES))
+
+meta_all <- bind_rows(lapply(names(I_samples), function(s) {
+  I_samples[[s]]@meta.data
+}))
+
+sc_avail <- intersect(score_cols, colnames(meta_all))
+
+# Aggrega per paziente × tipo cellulare × CAR status (solo T cells)
+heat_ct <- meta_all %>%
+  filter(!is.na(cell_type), cell_type %in% T_CELL_TYPES) %>%
+  group_by(patient, car_status, cell_type) %>%
+  summarise(across(all_of(sc_avail), \(x) mean(x, na.rm = TRUE)),
+            n_cells = n(), .groups = "drop") %>%
+  filter(n_cells >= 5) %>%
+  pivot_longer(all_of(sc_avail), names_to = "signature", values_to = "score") %>%
+  mutate(signature = gsub("score_","", signature),
+         signature = factor(signature, levels = names(SIGNATURES)))
+
+ggplot(heat_ct, aes(x = patient, y = cell_type, fill = score)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  scale_fill_gradient2(low = "#4DBBD5", mid = "white", high = "#E64B35",
+                       midpoint = 0, name = "Mean\nscore") +
+  facet_grid(car_status ~ signature) +
+  labs(title = "Module scores per cell type in infusion product I",
+       subtitle = "CD4/CD8 agnostic | Separated by CAR status",
+       x = NULL, y = NULL) +
+  theme_classic(base_size = 9) +
+  theme(axis.text.x  = element_text(angle = 25, hjust = 1),
+        axis.text.y  = element_text(size = 7),
+        strip.background = element_rect(fill = "#F0F0F0"),
+        strip.text   = element_text(face = "bold", size = 8))
+```
+
+## Heatmap inter-paziente (CAR+)
+
+```{r module-scores-heatmap, fig.height=5, fig.width=7}
+meta_all_carpos <- meta_all[meta_all$car_status == "CAR+", ]
+
+heat_df <- meta_all_carpos %>%
+  group_by(patient) %>%
+  summarise(across(all_of(sc_avail),
+                   \(x) mean(x, na.rm = TRUE)),
+            .groups = "drop") %>%
+  pivot_longer(-patient, names_to = "signature", values_to = "score") %>%
+  mutate(signature = gsub("score_","", signature),
+         signature = factor(signature, levels = names(SIGNATURES)))
+
+ggplot(heat_df, aes(x = patient, y = signature, fill = score)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  geom_text(aes(label = sprintf("%.3f", score)), size = 3.5) +
+  scale_fill_gradient2(low = "#4DBBD5", mid = "white", high = "#E64B35",
+                       midpoint = 0, name = "Mean\nscore") +
+  scale_x_discrete(labels = OUTCOME_LABEL) +
+  labs(title = "Module scores CAR+ in infusion product I",
+       subtitle = "Inter-patient comparison (descriptive, N=3)",
+       x = NULL, y = NULL) +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+```
+
+## Violin plots CAR+ vs CAR-
+
+```{r module-scores-violin, fig.height=12, fig.width=14}
+vln_plots <- lapply(sc_avail, function(sc) {
+  sig_name <- gsub("score_","", sc)
+  df <- meta_all %>%
+    filter(fs != "Other") %>%
+    select(patient, car_status, score = !!rlang::sym(sc)) %>%
+    filter(!is.na(score))
+
+  ggplot(df, aes(x = car_status, y = score, fill = car_status)) +
+    geom_violin(trim = TRUE, alpha = 0.85, color = "white") +
+    geom_boxplot(width = 0.12, fill = "white", alpha = 0.7, outlier.shape = NA) +
+    scale_fill_manual(values = c("CAR+" = "#E64B35","CAR-" = "#8FBCDB"), guide = "none") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60", linewidth = 0.4) +
+    facet_wrap(~ patient, ncol = 3,
+               labeller = labeller(patient = c(Bo="Bo",Ca="Ca",Me="Me"))) +
+    labs(title = sig_name, x = NULL, y = "Score") +
+    theme_classic(base_size = 9) +
+    theme(plot.title = element_text(face="bold", size=9),
+          strip.background = element_rect(fill = "#F0F0F0"))
+})
+
+wrap_plots(vln_plots, ncol = 2) +
+  plot_annotation(
+    title    = "Module scores: CAR+ vs CAR- per patient in infusion product I",
+    subtitle = "All T cells, CD4/CD8 agnostic",
+    theme    = theme(plot.title = element_text(face="bold"))
+  )
+```
+
+## Interpretazione
+
+**Firma Effector**: leggermente più alta nelle CAR+ di Bo (+0.117) e Me (+0.108) rispetto a Ca (+0.020). Bo ha il profilo effettore più "pulito".
+
+**Firma Memory_Stemness**: simile tra pazienti nelle CAR+ (Bo: +0.055, Me: +0.057, Ca: -0.034). Bo e Me hanno un modesto vantaggio in stemness.
+
+**Firma Exhaustion** (unione esaurimento progenitore + terminale): tutti i valori negativi nelle CAR+ → le CAR+ non sono esauste al momento dell'infusione (buono).
+
+**Firma Regulatory**: la proporzione di CAR+ con firma Regulatory alta in Ca e Me (CAR-Treg) correla con il peggior esito clinico.
+
+**Firma Tpex_StemLike**: leggermente negativa in tutti i pazienti per le CAR+. Si attiva dopo contatto con l'antigene in vivo.
+
+---
+
+# Proliferazione per tipo cellulare {.tabset}
+
+## Concetto
+
+La proliferazione non è analizzata come firma comparativa tra pazienti/stati, ma come proprietà del **tipo cellulare**: calcoliamo lo score di proliferazione (MKI67, TOP2A, PCNA, CCNB1, STMN1, UBE2C) su **tutte le cellule** (CAR+ e CAR-) e aggreghiamo per `cell_type` per identificare quali tipi cellulari sono in attivo ciclo cellulare nel prodotto I.
+
+## Score di proliferazione per tipo cellulare
+
+```{r proliferation-by-celltype, fig.height=9, fig.width=13}
+# Calcola score di proliferazione (su tutte le cellule)
+for (sname in names(I_samples)) {
+  genes_ok <- intersect(PROLIFERATION_GENES, rownames(I_samples[[sname]]))
+  if (length(genes_ok) < 2) next
+  I_samples[[sname]] <- AddModuleScore(
+    I_samples[[sname]], features = list(genes_ok), name = "score_Prolif", seed = 42
+  )
+  I_samples[[sname]]@meta.data[["score_Prolif"]] <-
+    I_samples[[sname]]@meta.data[["score_Prolif1"]]
+  I_samples[[sname]]@meta.data[["score_Prolif1"]] <- NULL
+}
+
+meta_prolif <- bind_rows(lapply(names(I_samples), function(s) {
+  I_samples[[s]]@meta.data
+}))
+
+prolif_by_ct <- meta_prolif %>%
+  filter(!is.na(cell_type), !is.na(score_Prolif), cell_type %in% T_CELL_TYPES) %>%
+  group_by(patient, cell_type, car_status) %>%
+  summarise(mean_prolif = mean(score_Prolif, na.rm = TRUE),
+            n = n(), .groups = "drop") %>%
+  filter(n >= 5)
+
+# Ordina i tipi cellulari per proliferazione media complessiva
+ct_order <- prolif_by_ct %>%
+  group_by(cell_type) %>%
+  summarise(overall = mean(mean_prolif), .groups = "drop") %>%
+  arrange(overall) %>%
+  pull(cell_type)
+
+prolif_by_ct <- prolif_by_ct %>%
+  mutate(cell_type = factor(cell_type, levels = ct_order))
+
+ggplot(prolif_by_ct, aes(x = cell_type, y = mean_prolif, fill = patient)) +
+  geom_col(position = position_dodge(0.8), width = 0.75,
+           color = "white", linewidth = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+  scale_fill_manual(values = PATIENT_COLORS, labels = OUTCOME_LABEL, name = NULL) +
+  coord_flip() +
+  facet_wrap(~ car_status, ncol = 2) +
+  labs(title = "Proliferation score per cell type — Infusion product I",
+       subtitle = paste0("Genes: ", paste(PROLIFERATION_GENES, collapse = ", ")),
+       x = NULL, y = "Mean proliferation score") +
+  theme_classic(base_size = 11) +
+  theme(legend.position = "bottom",
+        strip.background = element_rect(fill = "#F0F0F0"),
+        strip.text = element_text(face = "bold"))
+```
+
+## Dotplot per paziente
+
+```{r prolif-dotplot, fig.height=7, fig.width=12}
+# Dotplot: dimensione = n cellule, colore = score proliferazione
+prolif_dot <- meta_prolif %>%
+  filter(!is.na(cell_type), !is.na(score_Prolif), car_status == "CAR+", cell_type %in% T_CELL_TYPES) %>%
+  group_by(patient, cell_type) %>%
+  summarise(mean_prolif = mean(score_Prolif, na.rm = TRUE),
+            n = n(), .groups = "drop") %>%
+  filter(n >= 3) %>%
+  mutate(cell_type = factor(cell_type, levels = ct_order))
+
+ggplot(prolif_dot, aes(x = patient, y = cell_type,
+                        size = n, color = mean_prolif)) +
+  geom_point(alpha = 0.85) +
+  scale_color_gradient2(low = "#4DBBD5", mid = "white", high = "#E64B35",
+                        midpoint = 0, name = "Proliferation\nscore") +
+  scale_size_continuous(name = "N cells", range = c(2, 10)) +
+  scale_x_discrete(labels = OUTCOME_LABEL) +
+  labs(title = "Proliferation per cell type — CAR+ in infusion product I",
+       x = NULL, y = NULL) +
+  theme_classic(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+```
+
+---
+
+# Architettura clonale TCR {.tabset}
+
+## Concetto
+
+Il repertorio TCR delle cellule CAR+ nel prodotto I ci dice:
+
+1. **Quanto è diverso il prodotto?** Un prodotto policlonico ha più "riserva" clonale, ma un prodotto oligoclonale può espandersi più facilmente se quel clone è efficace
+2. **Quante cellule CAR+ hanno un TCR identificato?** (copertura VDJ)
+3. **Quali cloni dominano?** I cloni dominanti in I sono gli stessi che dominano in AB?
+
+**Nota metodologica**: il linking TCR↔cellula avviene tramite barcode. Il file VDJ di Bo ha un nome non-standard (`filtered_contig_annotations-.csv`) che correggiamo qui. I cloni sono identificati per coppia CDR3 TRA+TRB.
+
+```{r load-vdj-I}
+vdj_I_all <- list()
+
+for (pt in names(VDJ_I_MAP)) {
+  info <- VDJ_I_MAP[[pt]]
+  df   <- read_vdj_I(info$folder)
+  if (is.null(df) || nrow(df) == 0) {
+    cat(pt, ": VDJ non caricato\n")
+    next
+  }
+
+  best <- function(d) {
+    d %>% group_by(barcode) %>%
+      arrange(desc(umis), desc(reads)) %>%
+      slice(1) %>% ungroup()
+  }
+
+  tra <- df %>% filter(chain == "TRA") %>% best() %>%
+    select(barcode, TRA_v = v_gene, TRA_cdr3 = cdr3)
+  trb <- df %>% filter(chain == "TRB") %>% best() %>%
+    select(barcode, TRB_v = v_gene, TRB_cdr3 = cdr3)
+
+  paired <- inner_join(tra, trb, by = "barcode") %>%
+    mutate(
+      patient      = pt,
+      Clone_ID_CDR3 = paste(TRA_cdr3, TRB_cdr3, sep = "_"),
+      clean_barcode = gsub("-[0-9]+$","", barcode)
+    )
+
+  vdj_I_all[[pt]] <- paired
+  cat(sprintf("%s: %d cellule paired TRA+TRB\n", pt, nrow(paired)))
+}
+
+vdj_I_df <- bind_rows(vdj_I_all)
+```
+
+## Diversità del repertorio
+
+```{r diversity-metrics, fig.height=5, fig.width=9}
+div_results <- list()
+for (pt in names(VDJ_I_MAP)) {
+  if (!pt %in% names(vdj_I_all)) next
+
+  sname <- paste0(pt, "_bone_I")
+  if (!sname %in% names(I_samples)) next
+
+  meta  <- I_samples[[sname]]@meta.data
+  meta$barcode_clean <- gsub("-[0-9]+$","", sub("^([^_]+_){2}","", rownames(meta)))
+
+  vdj_pt <- vdj_I_all[[pt]] %>%
+    left_join(meta %>% select(barcode_clean, car_status),
+              by = c("clean_barcode" = "barcode_clean"))
+
+  for (cst in c("CAR+","CAR-")) {
+    clones_sub <- vdj_pt$Clone_ID_CDR3[!is.na(vdj_pt$car_status) &
+                                          vdj_pt$car_status == cst]
+    dm <- diversity_metrics(clones_sub)
+    div_results[[paste0(pt,"_",cst)]] <- data.frame(
+      patient    = pt,
+      car_status = cst,
+      n_cells    = dm$n_cells,
+      n_clones   = dm$n_clones,
+      shannon    = round(dm$shannon, 3),
+      clonality  = round(dm$clonality, 3),
+      simpson    = round(dm$simpson, 3),
+      pct_top1   = round(100 * dm$pct_top1, 1)
+    )
+  }
+}
+
+div_df <- bind_rows(div_results)
+
+p_div <- ggplot(div_df, aes(x = patient, y = clonality, fill = car_status)) +
+  geom_col(position = "dodge", width = 0.6, color = "white") +
+  scale_fill_manual(values = c("CAR+" = "#E64B35","CAR-" = "#8FBCDB"),
+                    name = "CAR status") +
+  scale_x_discrete(labels = OUTCOME_LABEL) +
+  labs(title = "Clonality index in infusion product I",
+       subtitle = "Clonality = 1 - H_normalized | 0 = max diversity, 1 = clonal monopoly",
+       x = NULL, y = "Clonality") +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+
+p_n <- ggplot(div_df, aes(x = patient, y = n_clones, fill = car_status)) +
+  geom_col(position = "dodge", width = 0.6, color = "white") +
+  geom_text(aes(label = n_clones), position = position_dodge(0.6),
+            vjust = -0.3, size = 3.5) +
+  scale_fill_manual(values = c("CAR+" = "#E64B35","CAR-" = "#8FBCDB"), guide = "none") +
+  labs(title = "Unique clones in infusion product I",
+       x = NULL, y = "No. clones (TRA+TRB paired)") +
+  scale_x_discrete(labels = OUTCOME_LABEL) +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+
+p_div | p_n
+```
+
+```{r diversity-table}
+kable(div_df, caption = "TCR diversity metrics in infusion product I", digits = 3, align = "c")
+```
+
+## Distribuzione frequenze clonali (rank-frequency)
+
+```{r rank-freq-plot, fig.height=6, fig.width=12}
+rank_df <- do.call(rbind, lapply(names(vdj_I_all), function(pt) {
+  sname <- paste0(pt, "_bone_I")
+  if (!sname %in% names(I_samples)) return(NULL)
+
+  meta  <- I_samples[[sname]]@meta.data
+  meta$bc_clean <- gsub("-[0-9]+$","", sub("^([^_]+_){2}","", rownames(meta)))
+
+  vdj_pt <- vdj_I_all[[pt]] %>%
+    left_join(meta %>% select(bc_clean, car_status),
+              by = c("clean_barcode" = "bc_clean")) %>%
+    filter(!is.na(car_status), car_status == "CAR+")
+
+  if (nrow(vdj_pt) == 0) return(NULL)
+
+  tbl <- sort(table(vdj_pt$Clone_ID_CDR3), decreasing = TRUE)
+  data.frame(
+    patient    = pt,
+    rank       = seq_along(tbl),
+    n_cells    = as.numeric(tbl),
+    freq       = as.numeric(tbl) / sum(tbl),
+    clone_id   = names(tbl)
+  )
+}))
+
+if (!is.null(rank_df) && nrow(rank_df) > 0) {
+  ggplot(rank_df, aes(x = rank, y = freq, color = patient)) +
+    geom_line(linewidth = 1) +
+    geom_point(data = rank_df %>% filter(rank <= 5), size = 2) +
+    scale_color_manual(values = PATIENT_COLORS,
+                       labels = OUTCOME_LABEL, name = NULL) +
+    scale_y_log10(labels = percent_format()) +
+    scale_x_log10() +
+    labs(title = "Clonal frequency distribution — CAR+ in infusion product I",
+         subtitle = "Log10 Y axis: steep curve → oligoclonal | flat → polyclonal",
+         x = "Clone rank (1 = most frequent)", y = "Relative frequency") +
+    theme_classic(base_size = 12) +
+    theme(legend.position = "bottom")
+}
+```
+
+## Top cloni per paziente
+
+```{r top-clones-table}
+top_clones <- rank_df %>%
+  filter(rank <= 10) %>%
+  mutate(
+    CDR3_TRA = gsub("_.*","", clone_id),
+    CDR3_TRB = gsub(".*_","", clone_id),
+    freq_pct = sprintf("%.1f%%", 100 * freq)
+  ) %>%
+  select(Patient=patient, Rank=rank, CDR3_TRA, CDR3_TRB,
+         N_cells=n_cells, Frequency=freq_pct)
+
+DT::datatable(top_clones,
+              caption = "Top 10 clones (CAR+) per patient in infusion product I",
+              filter = "top",
+              options = list(pageLength = 15, scrollX = TRUE))
+```
+
+---
+
+# Integrazione TCR × stato funzionale {.tabset}
+
+## Concetto
+
+Questa sezione risponde alla domanda: **i cloni dominanti (più frequenti) nel prodotto I si trovano in specifici stati funzionali?**
+
+Se i cloni dominanti di Bo sono principalmente in stato "Effector" → questo clone è già polarizzato verso la funzione effettrice prima dell'infusione.
+Se i cloni di Ca sono in stato "Regulatory" → le cellule CAR+ Treg sono clonalmente dominate da specifici cloni che potrebbero espandersi e sopprimere l'effetto.
+
+```{r tcr-functional-integration, fig.height=7, fig.width=12}
+integrated_df <- do.call(rbind, lapply(names(vdj_I_all), function(pt) {
+  sname <- paste0(pt, "_bone_I")
+  if (!sname %in% names(I_samples)) return(NULL)
+
+  meta  <- I_samples[[sname]]@meta.data
+  meta$bc_clean <- gsub("-[0-9]+$","", sub("^([^_]+_){2}","", rownames(meta)))
+
+  vdj_pt <- vdj_I_all[[pt]] %>%
+    left_join(meta %>% select(bc_clean, car_status, fs,
+                               starts_with("score_")),
+              by = c("clean_barcode" = "bc_clean"))
+
+  tbl <- sort(table(vdj_pt$Clone_ID_CDR3[vdj_pt$car_status == "CAR+"],
+                    useNA = "no"), decreasing = TRUE)
+  rank_map <- data.frame(Clone_ID_CDR3 = names(tbl),
+                          clone_rank    = seq_along(tbl),
+                          clone_freq    = as.numeric(tbl) / sum(tbl))
+
+  vdj_pt %>%
+    filter(car_status == "CAR+") %>%
+    left_join(rank_map, by = "Clone_ID_CDR3") %>%
+    mutate(patient = pt,
+           rank_cat = case_when(
+             clone_rank == 1     ~ "Clone #1 (dominant)",
+             clone_rank <= 5     ~ "Clone #2-5",
+             clone_rank <= 20    ~ "Clone #6-20",
+             !is.na(clone_rank)  ~ "Clone #21+",
+             TRUE                ~ "No TCR"
+           ))
+}))
+
+if (!is.null(integrated_df) && nrow(integrated_df) > 0) {
+  plot_df <- integrated_df %>%
+    filter(!is.na(fs), fs != "Other") %>%
+    group_by(patient, rank_cat, fs) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(patient, rank_cat) %>%
+    mutate(prop = n / sum(n)) %>%
+    ungroup() %>%
+    mutate(
+      fs = factor(fs, levels = FUNCTIONAL_ORDER),
+      rank_cat = factor(rank_cat,
+                        levels = c("Clone #1 (dominant)","Clone #2-5",
+                                   "Clone #6-20","Clone #21+","No TCR"))
+    )
+
+  ggplot(plot_df, aes(x = rank_cat, y = prop, fill = fs)) +
+    geom_col(width = 0.75, color = "white", linewidth = 0.3) +
+    facet_wrap(~ patient, ncol = 3,
+               labeller = labeller(patient = OUTCOME_LABEL)) +
+    scale_fill_manual(values = STATE_PALETTE, drop = FALSE,
+                      name = "Functional state") +
+    scale_y_continuous(labels = percent_format(), expand = c(0,0)) +
+    labs(
+      title    = "Functional state of CAR+ by clonal rank in infusion product I",
+      subtitle = "What functional state are the most frequent clones (rank #1) in?",
+      x        = "Clonal rank", y = "Proportion"
+    ) +
+    theme_classic(base_size = 11) +
+    theme(axis.text.x  = element_text(angle = 30, hjust = 1),
+          strip.background = element_rect(fill = "#F0F0F0"),
+          strip.text = element_text(face = "bold"))
+}
+```
+
+## Sovrapposizione clonale CAR+ / CAR-
+
+```{r clone-overlap, fig.height=5, fig.width=10}
+overlap_df <- do.call(rbind, lapply(names(vdj_I_all), function(pt) {
+  sname <- paste0(pt, "_bone_I")
+  if (!sname %in% names(I_samples)) return(NULL)
+
+  meta  <- I_samples[[sname]]@meta.data
+  meta$bc_clean <- gsub("-[0-9]+$","", sub("^([^_]+_){2}","", rownames(meta)))
+
+  vdj_pt <- vdj_I_all[[pt]] %>%
+    left_join(meta %>% select(bc_clean, car_status),
+              by = c("clean_barcode" = "bc_clean"))
+
+  clones_carpos <- unique(vdj_pt$Clone_ID_CDR3[vdj_pt$car_status == "CAR+" & !is.na(vdj_pt$car_status)])
+  clones_carneg <- unique(vdj_pt$Clone_ID_CDR3[vdj_pt$car_status == "CAR-" & !is.na(vdj_pt$car_status)])
+
+  shared <- intersect(clones_carpos, clones_carneg)
+
+  data.frame(
+    patient        = pt,
+    n_carpos_clones= length(clones_carpos),
+    n_carneg_clones= length(clones_carneg),
+    n_shared       = length(shared),
+    pct_shared_of_carpos = round(100 * length(shared) / max(1, length(clones_carpos)), 1)
+  )
+}))
+
+kable(overlap_df,
+      caption = "Clonal overlap CAR+ / CAR- in infusion product I",
+      col.names = c("Patient","CAR+ clones","CAR- clones","Shared",
+                    "% shared of CAR+"),
+      align = "c")
+```
+
+---
+
+# Conclusioni {.tabset}
+
+## Riepilogo firme geniche
+
+**Firma Effector**: Bo ha il module score Effector più alto (+0.117) tra le CAR+. Il profilo di Bo è più "pulito" e omogeneo.
+
+**Firma Exhaustion** (progenitore + terminale): tutti i valori negativi nelle CAR+ → le CAR+ non sono esauste al momento dell'infusione (buono). Ca ha il valore più basso.
+
+**Firma Regulatory**: la presenza di CAR+ con alta firma Regulatory in Ca e Me correla con il peggior esito clinico. Bo ha 0% di cellule CAR+ con fenotipo regolatorio.
+
+**Firma Tpex_StemLike**: leggermente negativa in tutti i pazienti per le CAR+. Il valore assoluto è modesto → la firma Tpex non è fortemente attivata nel prodotto I (attesa: si attiva dopo contatto con l'antigene in vivo).
+
+## Punti di attenzione
+
+- N=3 pazienti → correlazioni descrittive, non causali
+- L'annotazione CD4/CD8 da scRNA-seq è poco affidabile in questo dataset (dropout CD4)
+- I dati TCR di Bo erano assenti nell'analisi precedente (bug nel nome file VDJ) → corretti in questa pipeline
+
+```{r session-info, echo=FALSE}
+cat("Analisi completata:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+cat("R version:", R.version.string, "\n")
+cat("Seurat:", as.character(packageVersion("Seurat")), "\n")
+```
+
+---
+
+*Pipeline integrata scRNA-seq + TCR | CART functional analysis*
+*Federica D'Annunzio — Laboratorio Caruana*
