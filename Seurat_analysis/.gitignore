@@ -1,0 +1,9 @@
+# --- Cartelle specifiche progetto ---
+trash/
+**/trash/
+**/res/
+alessio_script/
+**/not_used/
+**/ytask/
+clonotypes_expansion_analysis/code/trash/
+11_integrated_pipeline/
