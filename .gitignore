@@ -11,6 +11,21 @@
 trash/
 **/trash/
 **/res/
+# --- Cartelle specifiche progetto ---
+trash/
+**/trash/
+**/res/
+unused/
+**/unused/
+alessio_script/
+**/not_used/
+**/ytask/
+*_results/
+*_cache/
+*_files/
+clonotypes_expansion_analysis/code/trash/
+11_integrated_pipeline/
+
 # --- Dati biologici grezzi e processati ---
 *.fastq
 *.fastq.gz
@@ -121,6 +136,7 @@ trash/
 *.7z
 *.rar
 *.xz
+*.py
 
 # --- Cartelle dati comuni ---
 data/
@@ -131,6 +147,7 @@ raw_data/
 results/
 output/
 outputs/
+res/
 work/
 tmp/
 temp/
