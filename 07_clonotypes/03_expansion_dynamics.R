@@ -68,29 +68,19 @@ shared_nt <- clone_counts_nt %>%
   filter(n_distinct(patient) > 1) %>%
   ungroup()
 
-dominant_patient <- shared_nt %>%
-  group_by(TRA_cdr3_nt, TRB_cdr3_nt, patient) %>%
-  summarise(n_cells_tot = sum(n_cells), .groups = "drop") %>%
-  group_by(TRA_cdr3_nt, TRB_cdr3_nt) %>%
-  slice_max(n_cells_tot, n=1, with_ties=FALSE) %>%
-  ungroup() %>%
-  rename(dominant_patient = patient)
-
-exclude_keys <- shared_nt %>%
-  distinct(TRA_cdr3_nt, TRB_cdr3_nt, patient) %>%
-  anti_join(dominant_patient %>% select(TRA_cdr3_nt, TRB_cdr3_nt, dominant_patient),
-            by = c("TRA_cdr3_nt" = "TRA_cdr3_nt",
-                   "TRB_cdr3_nt" = "TRB_cdr3_nt",
-                   "patient"     = "dominant_patient"))
+exclude_clones <- shared_nt %>%
+  distinct(TRA_cdr3_nt, TRB_cdr3_nt)
 
 clean_data <- full_data %>%
   filter(Clone_Quality == "Complete",
          !is.na(TRA_cdr3_nt), !is.na(TRB_cdr3_nt)) %>%
-  anti_join(exclude_keys, by = c("TRA_cdr3_nt","TRB_cdr3_nt","patient"))
+  anti_join(exclude_clones, by = c("TRA_cdr3_nt","TRB_cdr3_nt"))
 
-message(sprintf("  Contaminanti rimossi: %d cellule",
-                nrow(full_data %>% filter(Clone_Quality=="Complete")) - nrow(clean_data)))
-message(sprintf("  Cellule mantenute:    %d", nrow(clean_data)))
+n_before_03 <- nrow(full_data %>% filter(Clone_Quality=="Complete"))
+message(sprintf("  Cloni condivisi (rimossi da tutti): %d coppie CDR3_nt", nrow(exclude_clones)))
+message(sprintf("  Cellule rimosse: %d (%.1f%%)", n_before_03 - nrow(clean_data),
+                100*(n_before_03 - nrow(clean_data))/n_before_03))
+message(sprintf("  Cellule mantenute: %d", nrow(clean_data)))
 
 # ── STEP 1: Conteggi per clone × paziente × stage ─────────────────────────────
 message("\n--- STEP 1: Conteggi per stage ---")

@@ -86,21 +86,19 @@ write_xlsx(contamination_report,
 # ======================================================================
 # APPLY FILTER
 # ======================================================================
-# ── Passo 4: costruisci la lista di (CDR3_nt, patient) DA ESCLUDERE ─────────────
-# = tutti i (clone, patient) tranne il paziente dominante
-exclude_keys <- shared_nt %>%
-  distinct(TRA_cdr3_nt, TRB_cdr3_nt, patient) %>%
-  anti_join(dominant_patient %>% select(TRA_cdr3_nt, TRB_cdr3_nt, dominant_patient),
-            by = c("TRA_cdr3_nt" = "TRA_cdr3_nt",
-                   "TRB_cdr3_nt" = "TRB_cdr3_nt",
-                   "patient"     = "dominant_patient"))
+# ── Passo 4: escludi i cloni condivisi da TUTTI i pazienti ──────────────────────
+# Motivazione: CDR3_nt identica tra pazienti con terapia autologa non condivisa
+# indica cross-contaminazione durante la manifattura → il clone non è attribuibile
+# con certezza a nessun paziente, quindi viene rimosso da tutti.
+exclude_clones <- shared_nt %>%
+  distinct(TRA_cdr3_nt, TRB_cdr3_nt)   # tutte le coppie nt condivise
 
 n_before <- nrow(full_data %>% filter(Clone_Quality=="Complete"))
 
 clean_data <- full_data %>%
   filter(Clone_Quality == "Complete",
          !is.na(TRA_cdr3_nt), !is.na(TRB_cdr3_nt)) %>%
-  anti_join(exclude_keys, by = c("TRA_cdr3_nt","TRB_cdr3_nt","patient"))
+  anti_join(exclude_clones, by = c("TRA_cdr3_nt","TRB_cdr3_nt"))
 
 n_after  <- nrow(clean_data)
 n_removed <- n_before - n_after
