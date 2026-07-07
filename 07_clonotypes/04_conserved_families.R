@@ -27,7 +27,7 @@ dir.create(file.path(OUT_DIR, "figures"), recursive=TRUE, showWarnings=FALSE)
 # ======================================================================
 # BUILD CLONOTYPES
 # ======================================================================
-source(file.path(CODE_DIR, "01_build_clonotypes.R"))
+source(file.path(BASE, "01_build_clonotypes.R"))
 cat("\nfull_data caricato:", nrow(full_data), "cellule CAR+\n")
 cat("Distribuzione paziente × stage:\n")
 print(table(full_data$patient, full_data$stage))

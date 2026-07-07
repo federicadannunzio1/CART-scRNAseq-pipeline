@@ -5,7 +5,7 @@ library(writexl)
 library(stringr)
 
 # ==============================================================================
-# 04_expansion_dynamics.R
+# 03_expansion_dynamics.R
 #
 # COSA FA:
 #   Risponde alla domanda biologica principale:
@@ -18,7 +18,8 @@ library(stringr)
 #     Stabile        → presente ma non cambia
 #     Contratto      → si riduce
 #
-#   Cerca inoltre cloni espansi indipendentemente in più pazienti.
+#   Applica lo stesso filtro contaminanti di 04_conserved_families.R
+#   (rimozione cloni CDR3_nt condivisi tra pazienti, paziente non dominante).
 #
 # DIPENDE DA: 01_build_clonotypes.R (full_data in memoria)
 # ==============================================================================
@@ -38,6 +39,7 @@ if (!exists("full_data")) {
 }
 
 cols_attese <- c("TRA_v_gene","TRB_v_gene","TRA_cdr3","TRB_cdr3",
+                 "TRA_cdr3_nt","TRB_cdr3_nt",
                  "stage","patient","Clone_Quality","Clone_ID_CDR3","Gene_Label")
 cols_mancanti <- setdiff(cols_attese, colnames(full_data))
 if (length(cols_mancanti) > 0) {
@@ -49,10 +51,51 @@ message("✓ Colonne verificate")
 message("  Pazienti: ", paste(sort(unique(full_data$patient)), collapse=", "))
 message("  Stage:    ", paste(sort(unique(full_data$stage)),   collapse=", "))
 
+# ── STEP 0: Filtro contaminanti inter-paziente ─────────────────────────────────
+# Identico al filtro in 04_conserved_families.R: rimuove cloni con CDR3_nt
+# identica tra pazienti, tenendo solo il paziente con più cellule (dominante).
+message("\n--- STEP 0: Rimozione contaminanti inter-paziente ---")
+
+clone_counts_nt <- full_data %>%
+  filter(Clone_Quality == "Complete",
+         !is.na(TRA_cdr3_nt), !is.na(TRB_cdr3_nt),
+         TRA_cdr3_nt != "", TRB_cdr3_nt != "") %>%
+  group_by(TRA_cdr3_nt, TRB_cdr3_nt, patient) %>%
+  summarise(n_cells = n(), .groups = "drop")
+
+shared_nt <- clone_counts_nt %>%
+  group_by(TRA_cdr3_nt, TRB_cdr3_nt) %>%
+  filter(n_distinct(patient) > 1) %>%
+  ungroup()
+
+dominant_patient <- shared_nt %>%
+  group_by(TRA_cdr3_nt, TRB_cdr3_nt, patient) %>%
+  summarise(n_cells_tot = sum(n_cells), .groups = "drop") %>%
+  group_by(TRA_cdr3_nt, TRB_cdr3_nt) %>%
+  slice_max(n_cells_tot, n=1, with_ties=FALSE) %>%
+  ungroup() %>%
+  rename(dominant_patient = patient)
+
+exclude_keys <- shared_nt %>%
+  distinct(TRA_cdr3_nt, TRB_cdr3_nt, patient) %>%
+  anti_join(dominant_patient %>% select(TRA_cdr3_nt, TRB_cdr3_nt, dominant_patient),
+            by = c("TRA_cdr3_nt" = "TRA_cdr3_nt",
+                   "TRB_cdr3_nt" = "TRB_cdr3_nt",
+                   "patient"     = "dominant_patient"))
+
+clean_data <- full_data %>%
+  filter(Clone_Quality == "Complete",
+         !is.na(TRA_cdr3_nt), !is.na(TRB_cdr3_nt)) %>%
+  anti_join(exclude_keys, by = c("TRA_cdr3_nt","TRB_cdr3_nt","patient"))
+
+message(sprintf("  Contaminanti rimossi: %d cellule",
+                nrow(full_data %>% filter(Clone_Quality=="Complete")) - nrow(clean_data)))
+message(sprintf("  Cellule mantenute:    %d", nrow(clean_data)))
+
 # ── STEP 1: Conteggi per clone × paziente × stage ─────────────────────────────
 message("\n--- STEP 1: Conteggi per stage ---")
 
-clone_dynamics <- full_data %>%
+clone_dynamics <- clean_data %>%
   filter(Clone_Quality == "Complete") %>%
   group_by(patient, Clone_ID_CDR3, Gene_Label,
            TRA_cdr3, TRB_cdr3, TRA_v_gene, TRB_v_gene, stage) %>%
