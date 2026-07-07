@@ -16,8 +16,8 @@ library(patchwork)
 # ======================================================================
 # PATHS
 # ======================================================================
-BASE    <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Code/Seurat_analysis/clonotypes_expansion_analysis"
-OUT_DIR <- file.path(BASE, "results_P5")
+BASE    <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Code/07_clonotypes"
+OUT_DIR <- file.path(BASE, "results")
 dir.create(file.path(OUT_DIR, "figures"), showWarnings=FALSE)
 
 # Legge i dati post-decontaminazione già calcolati in 05_conserved_families.Rmd

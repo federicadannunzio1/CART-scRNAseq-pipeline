@@ -34,9 +34,12 @@ seurat_path <- "~/federica.dannunzio@uniroma1.it - Google Drive/Drive condivisi/
 
 base_path <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Data/output_allineamento_original_no_CAR_si_VDJ"
 
-output_dir <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Code/Seurat_analysis/4_clonotypes_expansion_analysis/res"
+output_dir  <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Code/07_clonotypes/results"
+figures_dir <- file.path(output_dir, "figures")
+tables_dir  <- file.path(output_dir, "tables")
 
-if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tables_dir,  recursive = TRUE, showWarnings = FALSE)
 
 # ==============================================================================
 # 2. STEP 1: CENSIMENTO CELLULE CAR+ (invariato)
@@ -456,9 +459,9 @@ print(p1); print(p2)
 message("\n--- STEP 8: SALVATAGGIO ---")
 
 # 1. Salvataggio Grafici PNG
-ggsave(file.path(output_dir,"Top10_Cloni_Vgene_vertical_CORRETTO.png"),
+ggsave(file.path(figures_dir,"Top10_Cloni_Vgene_vertical_CORRETTO.png"),
        p1, width=12, height=12, dpi=300, bg="white")
-ggsave(file.path(output_dir,"Top10_Cloni_CDR3_vertical_CORRETTO.png"),
+ggsave(file.path(figures_dir,"Top10_Cloni_CDR3_vertical_CORRETTO.png"),
        p2, width=12, height=12, dpi=300, bg="white")
 
 # 2. Salvataggio Excel Multi-foglio (Verifica CDR e Convergenza)
@@ -473,12 +476,12 @@ write_xlsx(list(
   "08_Confronto_CDR_completo" = confronto_CDR,
   "09_Confronto_VDJ_geni"     = confronto_geni,
   "10_Barcode_check"          = barcode_check
-), file.path(output_dir,"RISULTATI_verifica_CDR_completo_CORRETTO.xlsx"))
+), file.path(tables_dir,"RISULTATI_verifica_CDR_completo_CORRETTO.xlsx"))
 
 # 3. Salvataggio file Excel singoli (Compatibilità con analisi precedenti)
-write_xlsx(full_data,        file.path(output_dir,"RISULTATI_Cloni_Dati_Completi_con_CDR3.xlsx"))
-write_xlsx(top_clones_CDR3,  file.path(output_dir,"RISULTATI_Top10_Cloni_CDR3.xlsx"))
-write_xlsx(top_clones_Vgene, file.path(output_dir,"RISULTATI_Top10_Cloni_Vgene.xlsx"))
-write_xlsx(plot_ready_CDR3,  file.path(output_dir,"RISULTATI_Plot_CDR3.xlsx"))
+write_xlsx(full_data,        file.path(tables_dir,"RISULTATI_Cloni_Dati_Completi_con_CDR3.xlsx"))
+write_xlsx(top_clones_CDR3,  file.path(tables_dir,"RISULTATI_Top10_Cloni_CDR3.xlsx"))
+write_xlsx(top_clones_Vgene, file.path(tables_dir,"RISULTATI_Top10_Cloni_Vgene.xlsx"))
+write_xlsx(plot_ready_CDR3,  file.path(tables_dir,"RISULTATI_Plot_CDR3.xlsx"))
 
-message("Script completato! Tutti i file (PNG ed Excel) sono in: ", output_dir)
+message("Script completato! File in: ", tables_dir, " e ", figures_dir)

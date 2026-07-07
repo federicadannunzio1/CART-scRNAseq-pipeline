@@ -21,7 +21,8 @@ library(utils)
 # ==============================================================================
 
 # ── Configurazione ─────────────────────────────────────────────────────────────
-output_dir <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Code/Seurat_analysis/4_clonotypes_expansion_analysis/res/res_fixed"
+output_dir <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Code/07_clonotypes/results/tables"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 xlsx_fallback <- file.path(output_dir, "RISULTATI_Top10_Cloni_CDR3.xlsx")
 

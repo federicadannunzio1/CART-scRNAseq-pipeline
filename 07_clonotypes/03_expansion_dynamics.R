@@ -24,7 +24,11 @@ library(stringr)
 # ==============================================================================
 
 # ── Configurazione ─────────────────────────────────────────────────────────────
-output_dir <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Code/Seurat_analysis/4_clonotypes_expansion_analysis/res/res_expansion_dynamics"
+output_dir  <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Code/07_clonotypes/results"
+figures_dir <- file.path(output_dir, "figures")
+tables_dir  <- file.path(output_dir, "tables")
+dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tables_dir,  recursive = TRUE, showWarnings = FALSE)
 
 soglia_cellule <- 5  # n minimo cellule in stage B per considerare un clone
 
@@ -243,9 +247,9 @@ tabella_pub <- clone_wide %>%
 # ── STEP 7: Salvataggio ────────────────────────────────────────────────────────
 message("\n--- STEP 7: Salvataggio ---")
 
-ggsave(file.path(output_dir, "Expansion_dynamics_lineplot.png"),
+ggsave(file.path(figures_dir, "Expansion_dynamics_lineplot.png"),
        p_lines, width=12, height=14, dpi=300, bg="white")
-ggsave(file.path(output_dir, "Expansion_heatmap.png"),
+ggsave(file.path(figures_dir, "Expansion_heatmap.png"),
        p_heat,  width=14, height=10, dpi=300, bg="white")
 
 write_xlsx(list(
@@ -254,9 +258,9 @@ write_xlsx(list(
   "03_Espansi_multi_paz"    = if(nrow(cloni_multi_paz)>0) cloni_multi_paz else
                                 data.frame(nota="nessuno"),
   "04_Tabella_pubblicazione" = tabella_pub
-), file.path(output_dir, "RISULTATI_expansion_dynamics.xlsx"))
+), file.path(tables_dir, "RISULTATI_expansion_dynamics.xlsx"))
 
-message("Salvato in: ", output_dir)
+message("Salvato in: figures/ e tables/ dentro ", output_dir)
 message("\nFile prodotti:")
 message("  Expansion_dynamics_lineplot.png")
 message("  Expansion_heatmap.png")
