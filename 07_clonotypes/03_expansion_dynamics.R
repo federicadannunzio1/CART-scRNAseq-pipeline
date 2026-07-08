@@ -31,7 +31,13 @@ tables_dir  <- file.path(output_dir, "tables")
 dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(tables_dir,  recursive = TRUE, showWarnings = FALSE)
 
-soglia_cellule <- 5  # n minimo cellule in stage B per considerare un clone
+soglia_cellule <- 5  # n minimo cellule in stage B per considerare un clone espanso
+# Soglia di rilevamento stage I: NON esplicita — n_cells_I == 0 significa che
+# il clone non è stato catturato dall'scRNA-seq (limite stocastico del
+# sequenziamento). Cloni a bassa frequenza (<0.1–0.5%) possono non essere
+# campionati anche se biologicamente presenti nel prodotto di infusione.
+# Per Bo non esiste stage I, quindi tutti i cloni Bo in B hanno n_cells_I == 0
+# per assenza di dati (non per assenza biologica).
 
 # ── Controllo colonne ──────────────────────────────────────────────────────────
 if (!exists("full_data")) {
@@ -138,7 +144,11 @@ clone_wide <- clone_wide %>%
       TRUE                      ~ freq_A / freq_I
     ),
     categoria = case_when(
-      n_cells_I == 0 & n_cells_B  > 0 ~ "De novo in B",
+      # "Espanso (non rilevato in I)": non necessariamente assente in I —
+      # più probabilmente sotto il limite di rilevamento stocastico dell'scRNA-seq.
+      # Per Bo: n_cells_I == 0 perché non esiste stage I (dati mancanti).
+      # Per Me: n_cells_I == 0 perché il clone era a frequenza sub-soglia in I.
+      n_cells_I == 0 & n_cells_B  > 0 ~ "Espanso (non rilevato in I)",
       n_cells_I == 0 & n_cells_B == 0 ~ "Assente",
       FC_I_to_B >= 2                  ~ "Espanso (FC>=2)",
       FC_I_to_B >= 1                  ~ "Stabile",
@@ -156,7 +166,7 @@ message("\n--- STEP 3: Cloni espansi in B (soglia: ", soglia_cellule, " cellule)
 
 cloni_espansi <- clone_wide %>%
   filter(n_cells_B >= soglia_cellule,
-         categoria %in% c("Espanso (FC>=2)", "De novo in B")) %>%
+         categoria %in% c("Espanso (FC>=2)", "Espanso (non rilevato in I)")) %>%
   arrange(patient, desc(n_cells_B))
 
 message("Cloni espansi per paziente:")
@@ -196,7 +206,7 @@ p_lines <- ggplot(plot_dyn,
   geom_point(size=3) +
   facet_wrap(~patient, scales="free_y", ncol=1) +
   scale_color_manual(values=c(
-    "De novo in B"   = "#E41A1C",
+    "Espanso (non rilevato in I)" = "#E41A1C",
     "Espanso (FC>=2)"= "#FF7F00",
     "Stabile"        = "#4DAF4A",
     "Contratto"      = "#377EB8",

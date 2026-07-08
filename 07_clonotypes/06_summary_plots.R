@@ -21,6 +21,7 @@ PAT_LABEL <- c(Bo = "Bo (expansion)", Ca = "Ca (failure)", Me = "Me (partial)")
 # ==============================================================================
 cell_counts <- tibble::tribble(
   ~patient, ~stage, ~n_car, ~n_paired,
+  "Bo",     "I",     374,    374,
   "Bo",     "A",    1563,   1563,
   "Bo",     "B",     951,    951,
   "Ca",     "A",      10,     10,
@@ -31,7 +32,7 @@ cell_counts <- tibble::tribble(
 
 paired <- tibble::tribble(
   ~patient, ~n_complete,
-  "Bo", 2514,
+  "Bo", 2888,
   "Ca",  555,
   "Me",  365
 )
@@ -110,14 +111,14 @@ cat_counts <- exp_data %>%
   mutate(
     patient  = factor(patient, levels = c("Bo", "Ca", "Me")),
     categoria = factor(categoria,
-                       levels = c("De novo in B", "Espanso (FC>=2)",
+                       levels = c("Espanso (non rilevato in I)", "Espanso (FC>=2)",
                                   "Stabile", "Contratto"))
   )
 
-cat_colors <- c("De novo in B"    = "#E41A1C",
-                "Espanso (FC>=2)" = "#FF7F00",
-                "Stabile"         = "#4DAF4A",
-                "Contratto"       = "#377EB8")
+cat_colors <- c("Espanso (non rilevato in I)" = "#E41A1C",
+                "Espanso (FC>=2)"             = "#FF7F00",
+                "Stabile"                     = "#4DAF4A",
+                "Contratto"                   = "#377EB8")
 
 p_cat <- ggplot(cat_counts, aes(x = patient, y = n, fill = categoria)) +
   geom_col(position = "fill", width = 0.6, color = "white") +
@@ -171,7 +172,7 @@ top_exp <- espansi %>%
     clone_label = paste0(str_trunc(Gene_Label, 22), "\n",
                          str_trunc(TRB_cdr3, 18)),
     patient = factor(patient, levels = c("Bo", "Ca", "Me")),
-    FC_label = ifelse(categoria == "De novo in B", "De novo",
+    FC_label = ifelse(categoria == "Espanso (non rilevato in I)", "undetected in I",
                       paste0("FC=", round(as.numeric(FC_I_to_B), 1)))
   )
 
@@ -188,7 +189,7 @@ p_top <- ggplot(top_exp,
   theme(strip.text = element_text(face = "bold"),
         panel.grid.major.y = element_blank()) +
   labs(title = "Top 10 expanded clones in stage B (per patient)",
-       subtitle = "Fold-change relative to stage I shown; De novo = absent in I",
+       subtitle = "Fold-change relative to stage I shown; 'undetected in I' = below detection limit",
        x = "N cells in stage B", y = NULL)
 
 ggsave(file.path(OUT, "Fig4_top_expanded_clones.png"),
@@ -255,7 +256,7 @@ message("Fig5 saved")
 # ==============================================================================
 outcomes <- tibble::tribble(
   ~patient, ~car_in_I_pct, ~car_in_B_pct, ~n_expanded, ~outcome,
-  "Bo",      1.9,           22.0,           30,          "Expansion",
+  "Bo",      1.9,           22.0,           27,          "Expansion",
   "Ca",     19.1,            0.0,            0,          "Failure",
   "Me",      9.9,            4.9,            1,          "Partial"
 )

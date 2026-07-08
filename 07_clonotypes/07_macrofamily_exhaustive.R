@@ -64,7 +64,7 @@ fin_macro <- fin %>%
 message("\n=== ANALISI A: V+J macrofamily pairs ===")
 
 bo_exp <- esp_full %>%
-  filter(patient == "Bo", categoria %in% c("Espanso (FC>=2)","De novo in B"))
+  filter(patient == "Bo", categoria %in% c("Espanso (FC>=2)","Espanso (non rilevato in I)"))
 
 cat_me  <- fin_macro %>% filter(patient %in% c("Ca","Me"))
 
@@ -123,7 +123,13 @@ for (b in unique(bo_cdr3b)) {
   }
 }
 
-results_edit <- results_edit %>% distinct() %>% arrange(edit_dist, bo_TRB_cdr3)
+if (nrow(results_edit) > 0) {
+  results_edit <- results_edit %>% distinct() %>% arrange(edit_dist, bo_TRB_cdr3)
+} else {
+  results_edit <- data.frame(bo_TRB_cdr3=character(), came_TRB_cdr3=character(),
+                             came_patient=character(), came_stage=character(),
+                             came_TRB_Vgene=character(), edit_dist=integer())
+}
 
 message("Coppie CDR3 beta con edit distance ≤2: ", nrow(results_edit))
 if (nrow(results_edit) > 0) {

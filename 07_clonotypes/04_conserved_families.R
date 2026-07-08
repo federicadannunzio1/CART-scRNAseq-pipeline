@@ -249,10 +249,11 @@ temp_dir <- tempdir()
 
 dl_ok <- tryCatch({
   download.file(url_zip, temp_zip, mode="wb", quiet=TRUE)
-  TRUE
+  # Verify the file is a valid zip (not an error page)
+  file.size(temp_zip) > 1e6
 }, error=function(e) { message("⚠ Download fallito: ", e$message); FALSE })
 
-if (dl_ok) {
+if (isTRUE(dl_ok)) {
   unzip(temp_zip, exdir=temp_dir, overwrite=TRUE)
   vdjdb_file <- list.files(temp_dir,
                            pattern="vdjdb.*\\.txt|vdjdb.*\\.tsv",
@@ -260,8 +261,15 @@ if (dl_ok) {
   vdjdb_raw  <- read_tsv(vdjdb_file, show_col_types=FALSE)
   cat("VDJdb scaricato:", nrow(vdjdb_raw), "righe\n")
   unlink(temp_zip)
+  vdjdb_ok <- TRUE
 } else {
-  stop("VDJdb non disponibile. Controlla la connessione.")
+  message("⚠ VDJdb non disponibile — proseguo senza annotazione VDJdb (flag vdjdb_hit=FALSE)")
+  vdjdb_raw <- data.frame(species=character(), cdr3.beta=character(), v.beta=character(),
+                          j.beta=character(), cdr3.alpha=character(), v.alpha=character(),
+                          j.alpha=character(), antigen.species=character(),
+                          antigen.gene=character(), antigen.epitope=character(),
+                          stringsAsFactors=FALSE)
+  vdjdb_ok <- FALSE
 }
 
 # ======================================================================

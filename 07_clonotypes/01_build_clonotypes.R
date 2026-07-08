@@ -87,8 +87,13 @@ message("\n--- STEP 2: LETTURA VDJ CORRETTA ---")
 read_vdj_corretto <- function(folder, base_dir) {
   f1     <- file.path(base_dir, "1", folder, "vdj_t", "filtered_contig_annotations.csv")
   f2     <- file.path(base_dir, "2", folder, "vdj_t", "filtered_contig_annotations.csv")
-  target <- if (file.exists(f1)) f1 else if (file.exists(f2)) f2 else NULL
+  # Fallback: S429_I ha il file con un trattino nel nome (filtered_contig_annotations-.csv)
+  f1alt  <- file.path(base_dir, "1", folder, "vdj_t", "filtered_contig_annotations-.csv")
+  f2alt  <- file.path(base_dir, "2", folder, "vdj_t", "filtered_contig_annotations-.csv")
+  target <- if (file.exists(f1)) f1 else if (file.exists(f2)) f2 else
+            if (file.exists(f1alt)) f1alt else if (file.exists(f2alt)) f2alt else NULL
   if (is.null(target)) { message("  MANCANTE: ", folder); return(NULL) }
+  if (grepl("-\\.csv$", target)) message("  NOTA: usando file con nome alternativo: ", basename(target))
   message("  TROVATO: ", folder)
   
   tryCatch({
@@ -242,13 +247,35 @@ print(table(full_data$Clone_Quality, full_data$patient))
 # ==============================================================================
 message("\n--- STEP 4: TOP 10 CLONI ---")
 
+# Top cloni per stage I e stage B separatamente, poi unione.
+# Motivo: i cloni dominanti in B (espansi) hanno centinaia di cellule e
+# mascherano completamente i cloni presenti nel prodotto di infusione (I),
+# che hanno poche cellule. L'unione permette di vedere il turnover clonale.
+clone_counts_per_stage <- full_data %>%
+  filter(Clone_Quality=="Complete") %>%
+  group_by(patient, stage, Clone_ID_CDR3, Gene_Label, TRA_cdr3, TRB_cdr3) %>%
+  summarise(n_cells=n(), .groups="drop")
+
+top_I_clones <- clone_counts_per_stage %>%
+  filter(stage=="I") %>%
+  group_by(patient) %>% slice_max(n_cells, n=5, with_ties=FALSE) %>%
+  ungroup() %>% select(patient, Clone_ID_CDR3)
+
+top_B_clones <- clone_counts_per_stage %>%
+  filter(stage=="B") %>%
+  group_by(patient) %>% slice_max(n_cells, n=5, with_ties=FALSE) %>%
+  ungroup() %>% select(patient, Clone_ID_CDR3)
+
+top_IB_union <- bind_rows(top_I_clones, top_B_clones) %>%
+  distinct(patient, Clone_ID_CDR3)
+
 top_clones_CDR3 <- full_data %>%
   filter(Clone_Quality=="Complete") %>%
+  semi_join(top_IB_union, by=c("patient","Clone_ID_CDR3")) %>%
   group_by(patient, Clone_ID_CDR3, Gene_Label, TRA_cdr3, TRB_cdr3) %>%
   summarise(total_n=n(), .groups="drop") %>%
   arrange(patient, desc(total_n)) %>%
-  group_by(patient) %>% slice_head(n=10) %>%
-  mutate(Rank=row_number())
+  group_by(patient) %>% mutate(Rank=row_number()) %>% ungroup()
 
 top_clones_Vgene <- full_data %>%
   group_by(patient, Gene_Label) %>%
@@ -368,15 +395,37 @@ plot_ready_Vgene <- full_data %>%
   mutate(stage=factor(stage,levels=c("I","A","B")),
          Rank_ID=factor(Rank_ID,levels=paste0("Clone ",10:1)))
 
+# Indica l'origine del clone (top-I, top-B, o entrambi) per annotare il plot
+clone_origin <- bind_rows(
+  top_I_clones %>% mutate(in_topI=TRUE),
+  top_B_clones %>% mutate(in_topB=TRUE)
+) %>%
+  group_by(patient, Clone_ID_CDR3) %>%
+  summarise(in_topI=any(!is.na(in_topI)), in_topB=any(!is.na(in_topB)), .groups="drop") %>%
+  mutate(origin = case_when(
+    in_topI & in_topB ~ "[I+B]",
+    in_topI           ~ "[I]",
+    TRUE              ~ "[B]"
+  ))
+
+n_cloni_per_paz <- top_clones_CDR3 %>% group_by(patient) %>% summarise(n=n())
+
 plot_ready_CDR3 <- full_data %>%
   filter(Clone_Quality=="Complete") %>%
   inner_join(top_clones_CDR3 %>% select(patient,Clone_ID_CDR3,Rank), by=c("patient","Clone_ID_CDR3")) %>%
-  group_by(patient,Rank,Gene_Label,stage,TRB_cdr3) %>%
+  left_join(clone_origin %>% select(patient,Clone_ID_CDR3,origin), by=c("patient","Clone_ID_CDR3")) %>%
+  group_by(patient,Rank,Gene_Label,stage,TRB_cdr3,origin) %>%
   summarise(n_cells=n(), .groups="drop") %>%
-  complete(nesting(patient,Rank,Gene_Label,TRB_cdr3), stage=c("I","A","B"), fill=list(n_cells=0)) %>%
+  left_join(n_cloni_per_paz, by="patient") %>%
+  complete(nesting(patient,Rank,Gene_Label,TRB_cdr3,origin), stage=c("I","A","B"), fill=list(n_cells=0)) %>%
   filter(!(patient=="Me" & stage=="A")) %>%
   mutate(stage=factor(stage,levels=c("I","A","B")),
-         Rank_Label=factor(paste0("Clone ",Rank), levels=paste0("Clone ",10:1)))
+         # Label: "Clone 1 [B]  CASXXX" — origin indica se il clone è top in I, B, o entrambi
+         Rank_Label=factor(
+           paste0("Clone ",Rank," ",origin,"  |  ",str_trunc(TRB_cdr3,14)),
+           levels=rev(sort(unique(paste0("Clone ",Rank," ",origin,"  |  ",str_trunc(TRB_cdr3,14)))))
+         )
+  )
 
 
 # ==============================================================================
@@ -429,28 +478,25 @@ p1 <- ggplot(plot_ready_Vgene, aes(x=Rank_ID, y=n_cells, fill=stage)) +
        y="Numero di Cellule", x="", fill="Stage")
 
 # Plot 2: CDR3 (Il metodo più preciso)
+# Rank_Label include già il CDR3 beta troncato e il tag [I]/[B]/[I+B]
+# che indica in quale stage il clone è dominante
 p2 <- ggplot(plot_ready_CDR3, aes(x=Rank_Label, y=n_cells, fill=stage)) +
   geom_bar(stat="identity", position=position_dodge(preserve="single"),
            width=0.8, color="black", linewidth=0.2) +
-  geom_text(
-    data=plot_ready_CDR3 %>% group_by(patient,Rank_Label) %>% slice(1) %>%
-      group_by(patient) %>% mutate(y_pos=-max(n_cells, na.rm=TRUE)*0.08),
-    aes(x=Rank_Label, y=y_pos, label=Gene_Label),
-    hjust=1, size=3.5, color="grey20", inherit.aes=FALSE
-  ) +
   facet_wrap(~patient, scales="free", ncol=1) +
   coord_flip(clip="off", ylim=c(0,NA)) +
   scale_fill_manual(values=c("I"="#619CFF","A"="#F8766D","B"="#00BA38")) +
   theme_minimal() +
-  theme(plot.margin=margin(10,20,10,200), axis.text.y=element_blank(),
-        axis.ticks.y=element_blank(), legend.position="bottom",
+  theme(plot.margin=margin(10,20,10,20), axis.text.y=element_text(size=9),
+        legend.position="bottom",
         panel.grid.minor=element_blank(), panel.grid.major.y=element_blank(),
         strip.text=element_text(face="bold",size=12)) +
-  labs(title="Top 10 Cloni CAR T (Metodo CDR3)",
+  labs(title="Top Cloni CAR T (CDR3) — Top 5 stage I + Top 5 stage B per paziente",
+       subtitle="[I] = dominante in stage I  |  [B] = dominante in stage B  |  [I+B] = presente in entrambi",
        y="Numero di Cellule", x="", fill="Stage")
 
-# Visualizza i plot in RStudio
-print(p1); print(p2)
+# I plot vengono salvati con ggsave — print() è omesso per evitare Rplots.pdf
+if (interactive()) { print(p1); print(p2) }
 
 
 # ==============================================================================
