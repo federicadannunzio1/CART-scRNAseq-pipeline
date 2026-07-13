@@ -247,12 +247,31 @@ print(table(full_data$Clone_Quality, full_data$patient))
 # ==============================================================================
 message("\n--- STEP 4: TOP 10 CLONI ---")
 
+# Filtro contaminanti inter-paziente (CDR3_nt identica tra pazienti diversi)
+# Identico al filtro usato in 03 e 04 — rimuove i cloni da tutti i pazienti.
+# Motivazione: Bo e Me non hanno ricevuto lo stesso lotto CAR-T, quindi
+# cloni con CDR3_nt identica tra pazienti sono contaminazione di laboratorio.
+exclude_nt_plot <- full_data %>%
+  filter(Clone_Quality=="Complete",
+         !is.na(TRA_cdr3_nt), !is.na(TRB_cdr3_nt),
+         TRA_cdr3_nt != "", TRB_cdr3_nt != "") %>%
+  group_by(TRA_cdr3_nt, TRB_cdr3_nt, patient) %>%
+  summarise(n=n(), .groups="drop") %>%
+  group_by(TRA_cdr3_nt, TRB_cdr3_nt) %>%
+  filter(n_distinct(patient) > 1) %>%
+  ungroup() %>%
+  distinct(TRA_cdr3_nt, TRB_cdr3_nt)
+
+clean_data_plot <- full_data %>%
+  filter(Clone_Quality=="Complete",
+         !is.na(TRA_cdr3_nt), !is.na(TRB_cdr3_nt)) %>%
+  anti_join(exclude_nt_plot, by=c("TRA_cdr3_nt","TRB_cdr3_nt"))
+
 # Top cloni per stage I e stage B separatamente, poi unione.
 # Motivo: i cloni dominanti in B (espansi) hanno centinaia di cellule e
 # mascherano completamente i cloni presenti nel prodotto di infusione (I),
 # che hanno poche cellule. L'unione permette di vedere il turnover clonale.
-clone_counts_per_stage <- full_data %>%
-  filter(Clone_Quality=="Complete") %>%
+clone_counts_per_stage <- clean_data_plot %>%
   group_by(patient, stage, Clone_ID_CDR3, Gene_Label, TRA_cdr3, TRB_cdr3) %>%
   summarise(n_cells=n(), .groups="drop")
 
@@ -269,8 +288,7 @@ top_B_clones <- clone_counts_per_stage %>%
 top_IB_union <- bind_rows(top_I_clones, top_B_clones) %>%
   distinct(patient, Clone_ID_CDR3)
 
-top_clones_CDR3 <- full_data %>%
-  filter(Clone_Quality=="Complete") %>%
+top_clones_CDR3 <- clean_data_plot %>%
   semi_join(top_IB_union, by=c("patient","Clone_ID_CDR3")) %>%
   group_by(patient, Clone_ID_CDR3, Gene_Label, TRA_cdr3, TRB_cdr3) %>%
   summarise(total_n=n(), .groups="drop") %>%
@@ -410,8 +428,7 @@ clone_origin <- bind_rows(
 
 n_cloni_per_paz <- top_clones_CDR3 %>% group_by(patient) %>% summarise(n=n())
 
-plot_ready_CDR3 <- full_data %>%
-  filter(Clone_Quality=="Complete") %>%
+plot_ready_CDR3 <- clean_data_plot %>%
   inner_join(top_clones_CDR3 %>% select(patient,Clone_ID_CDR3,Rank), by=c("patient","Clone_ID_CDR3")) %>%
   left_join(clone_origin %>% select(patient,Clone_ID_CDR3,origin), by=c("patient","Clone_ID_CDR3")) %>%
   group_by(patient,Rank,Gene_Label,stage,TRB_cdr3,origin) %>%
