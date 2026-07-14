@@ -35,11 +35,11 @@ show_fig <- function(name) {
 
 Questo report documenta le analisi clonotipi CAR-T (script 12–15) su dati scRNA-seq di tre pazienti leucemici trattati con terapia CAR-T:
 
-| Paziente | Outcome clinico | Stage disponibili |
-|----------|-----------------|-------------------|
-| **Bo**   | Espansione massiva (risposta completa) | I, A, B |
-| **Ca**   | Fallimento completo (no CAR+ in B)    | I, A    |
-| **Me**   | Persistenza parziale                  | I, B    |
+| Paziente | Outcome clinico | Stage disponibili | Note |
+|----------|-----------------|-------------------|------|
+| **Bo**   | Espansione massiva (risposta completa) | I, A, B | Dati completi e affidabili |
+| **Ca**   | Fallimento completo (no CAR+ in B)    | I, A    | Stage A con sole 8 cellule; stage B assente |
+| **Me**   | Persistenza parziale                  | I, B    | Stage B severamente contaminato (vedi sezione dedicata) |
 
 **Unità di analisi principale**: coppia TRAV+TRBV macrofamiglia, definita come:
 
@@ -50,6 +50,73 @@ $$\text{pair\_vgene} = \text{macro(TRA\_v\_gene)} + \text{``} + \text{''} + \tex
 **Motivazione**: 0 sequenze CDR3 (alpha, beta o coppie) sono condivise tra pazienti dopo il filtro di decontaminazione. Il livello di sharing biologicamente rilevante è quello delle famiglie V-gene, come mostrato in Fig. 11 (bubble dotplot). Cellule di pazienti diversi possono usare la stessa coppia TRAV+TRBV con CDR3 diverse — stesso template strutturale, antigen specificity diversa.
 
 **Filtro decontaminazione**: 6 coppie con CDR3 nucleotidica (CDR3_nt) identica tra pazienti sono state rimosse. Bo e Me hanno ricevuto lotti CAR-T distinti — CDR3_nt identica tra pazienti indica cross-contaminazione manufatturiera, non biologia condivisa.
+
+---
+
+# Contaminazione manufatturiera — Analisi e impatto sui dati
+
+## Identificazione della contaminazione
+
+Il filtro di decontaminazione rimuove i cloni con CDR3 nucleotidica (TRA_cdr3_nt + TRB_cdr3_nt) identica tra pazienti diversi. Poiché ogni paziente ha ricevuto un prodotto CAR-T autologo indipendente, la presenza di sequenze CDR3_nt identiche tra pazienti è incompatibile con origine biologica indipendente e indica cross-contaminazione durante la manifattura.
+
+Sono stati identificati **6 cloni condivisi** tra pazienti:
+
+```{r contam_table, echo=FALSE}
+cr <- tryCatch(read_xlsx(tab("contamination_report.xlsx")), error=function(e) NULL)
+if (!is.null(cr)) {
+  knitr::kable(
+    cr %>% select(TRA_cdr3, TRB_cdr3, pazienti, dominant_patient, dominant_n, dettaglio),
+    caption="Tabella C1. Cloni con CDR3_nt identica tra pazienti (cross-contaminazione). dominant_patient = paziente con più cellule per quel clone; dominant_n = numero cellule nel paziente dominante.",
+    col.names=c("CDR3 alpha","CDR3 beta","Pazienti coinvolti","Paziente dominante","N cellule dominante","Dettaglio (paziente×stage×cellule)")
+  )
+} else {
+  cat("⚠ contamination_report.xlsx non trovato")
+}
+```
+
+## Impatto per paziente e stage
+
+```{r contam_impact, echo=FALSE}
+fd <- tryCatch(read_xlsx(tab("RISULTATI_Cloni_Dati_Completi_con_CDR3.xlsx")), error=function(e) NULL)
+if (!is.null(fd) && !is.null(cr)) {
+  shared_nt <- fd %>%
+    filter(Clone_Quality=='Complete', !is.na(TRA_cdr3_nt), !is.na(TRB_cdr3_nt),
+           TRA_cdr3_nt != '', TRB_cdr3_nt != '') %>%
+    group_by(TRA_cdr3_nt, TRB_cdr3_nt) %>%
+    filter(n_distinct(patient) > 1) %>%
+    ungroup() %>%
+    distinct(TRA_cdr3_nt, TRB_cdr3_nt)
+
+  impact <- fd %>%
+    filter(Clone_Quality=='Complete', !is.na(TRA_cdr3_nt), !is.na(TRB_cdr3_nt)) %>%
+    mutate(rimossa = paste(TRA_cdr3_nt, TRB_cdr3_nt) %in%
+             paste(shared_nt$TRA_cdr3_nt, shared_nt$TRB_cdr3_nt)) %>%
+    count(patient, stage, rimossa) %>%
+    tidyr::pivot_wider(names_from=rimossa, values_from=n, values_fill=0) %>%
+    rename(cellule_rimosse=`TRUE`, cellule_mantenute=`FALSE`) %>%
+    mutate(pct_rimossa=round(100*cellule_rimosse/(cellule_rimosse+cellule_mantenute),1)) %>%
+    arrange(patient, stage)
+
+  knitr::kable(impact,
+               caption="Tabella C2. Impatto del filtro di decontaminazione per paziente × stage.",
+               col.names=c("Paziente","Stage","Cellule rimosse","Cellule mantenute","% rimossa"))
+} else {
+  cat("⚠ dati non disponibili")
+}
+```
+
+## Caso critico: Me stage B
+
+Il campione **Me_B (S431_B)** presenta una contaminazione severa: **252 su 259 cellule CAR+ (97.3%)** appartengono a cloni con CDR3_nt identica a cloni massivamente espansi in Bo. In particolare, i tre cloni dominanti in Me_B sono gli stessi dei cloni top espansi in Bo-A e Bo-B, dove raggiungono rispettivamente 372, 112 e 53 cellule.
+
+**Interpretazione**: la quasi totalità delle cellule CAR+ rilevate nel campione Me_B sono di origine Bo, verosimilmente introdotte durante la manifattura del prodotto CAR-T (cross-contaminazione di laboratorio). Solo **7 cellule genuine** di Me rimangono dopo la decontaminazione in stage B.
+
+**Conseguenza per le analisi**:
+
+- Il confronto I→B per Me è **inutilizzabile** (7 cellule genuine in B).
+- L'analisi di espansione relativa (script 15 e 17) per Me non è interpretabile.
+- Me è affidabile **solo per lo stage I** (104 cellule genuine, non contaminate).
+- I risultati di expansione cross-paziente (TRBV7 in Me-B, FC=14.9x) riflettono cellule di Bo, non di Me.
 
 ---
 
@@ -193,85 +260,145 @@ show_fig("Fig13_shared_vgene_pairs_AB.png")
 
 ---
 
-# Analisi 14 — Famiglie V-gene condivise tra i tre pazienti (tutti gli stage)
+# Analisi 14 — Famiglie V-gene condivise: selezione in vivo vs repertorio pre-esistente
 
 ## Obiettivo
 
-Identificare quali macrofamiglie TRBV, TRAV e coppie TRAV+TRBV compaiono in più di un paziente, considerando tutti gli stage (I + A + B). Questo fornisce la visione più ampia del repertorio V-gene condiviso.
+Distinguere due categorie biologicamente distinte di sharing delle coppie TRAV+TRBV tra pazienti:
+
+- **Categoria 2 — Selezionate in vivo (A/B)**: coppie presenti in ≥2 pazienti negli stage di trattamento (A e/o B). Suggeriscono selezione comune dell'ambiente tumorale o della terapia.
+- **Categoria 3 — Pre-esistenti e mantenute (I→A/B)**: coppie presenti nel prodotto di infusione (I) di ≥2 pazienti E osservate in A/B almeno in un paziente. Rappresentano un repertorio condiviso nell'infusione che sopravvive/si espande in vivo.
+
+> **Nota metodologica**: lo sharing di coppie V-gene su *tutti gli stage combinati* (I+A+B) non è biologicamente discriminante — include famiglie comuni nel repertorio umano che compaiono per caso in ogni campione. L'analisi per stage permette di distinguere selezione in vivo da repertorio di partenza.
 
 ## Metodo
 
-Tre livelli di analisi:
+- Dati: `final_clone_sequences.xlsx` post-decontaminazione
+- Stage per paziente: Bo → I, A, B | Ca → I, A (8 cellule in A) | Me → I, B (7 cellule genuine in B)
+- Unità: coppia macrofamiglia `TRAV + TRBV` (es. TRAV12-1 → TRAV12)
+- FC Bo approssimativo in Cat.3: cellule in A+B / cellule in I (su conteggi assoluti)
 
-1. **TRBV macrofamiglia** (es. TRBV7): in quanti pazienti appare?
-2. **TRAV macrofamiglia** (es. TRAV12): in quanti pazienti appare?
-3. **Coppia TRAV+TRBV** (es. TRAV12 + TRBV7): in quanti pazienti appare?
+## Risultati — Categoria 2: Coppie shared in A/B
 
-Per ciascun livello: n cellule per paziente, n CDR3 distinte (cloni diversi che usano la stessa V-gene family), stage in cui compare.
-
-## Risultati
-
-```{r res14, echo=FALSE}
+```{r res14_cat2, echo=FALSE}
 f14 <- tab("14_shared_chains.xlsx")
 if (file.exists(f14)) {
-  # TRBV in tutti e 3
-  trbv3 <- tryCatch(read_xlsx(f14, sheet="01_TRBV_tutti_3_pazienti"), error=function(e) NULL)
-  # TRAV in tutti e 3
-  trav3 <- tryCatch(read_xlsx(f14, sheet="03_TRAV_tutti_3_pazienti"), error=function(e) NULL)
-  # Coppie in tutti e 3
-  cop3 <- tryCatch(read_xlsx(f14, sheet="05_Coppie_tutti_3_pazienti"), error=function(e) NULL)
-  # Coppie in 2
-  cop2 <- tryCatch(read_xlsx(f14, sheet="06_Coppie_2_pazienti"), error=function(e) NULL)
-
-  # Riepilogo conteggi
-  summ14 <- tibble(
-    Livello = c("TRBV macrofamiglia","TRAV macrofamiglia","Coppia TRAV+TRBV"),
-    `Tutti e 3` = c(if(!is.null(trbv3)) nrow(trbv3) else NA,
-                    if(!is.null(trav3)) nrow(trav3) else NA,
-                    if(!is.null(cop3)) nrow(cop3) else NA),
-    `2 pazienti` = c(NA, NA, if(!is.null(cop2)) nrow(cop2) else NA)
-  )
-  knitr::kable(summ14,
-               caption="Tabella 14A. Riepilogo sharing famiglie V-gene tra pazienti (tutti gli stage).")
-
-  cat("\n\n")
-
-  if (!is.null(trbv3) && nrow(trbv3) > 0) {
-    knitr::kable(trbv3 %>% select(macro_TRB, n_cells_Bo, n_cells_Ca, n_cells_Me, n_cloni_distinti),
-                 caption=sprintf("Tabella 14B. TRBV macrofamiglie in tutti e 3 i pazienti (N=%d).", nrow(trbv3)),
-                 col.names=c("TRBV","Cellule Bo","Cellule Ca","Cellule Me","N cloni CDR3 distinti"))
-  }
-
-  cat("\n\n")
-
-  if (!is.null(cop3) && nrow(cop3) > 0) {
-    knitr::kable(head(cop3, 15) %>%
-                   select(pair_vgene, n_cells_Bo, n_cells_Ca, n_cells_Me, n_cloni_distinti),
-                 caption=sprintf("Tabella 14C. Coppie TRAV+TRBV in tutti e 3 i pazienti — N=%d (prime 15).", nrow(cop3)),
-                 col.names=c("Coppia TRAV+TRBV","Cellule Bo","Cellule Ca","Cellule Me","N cloni CDR3 distinti"))
+  cat2 <- tryCatch(read_xlsx(f14, sheet="01_Cat2_shared_AB"), error=function(e) NULL)
+  if (!is.null(cat2) && nrow(cat2) > 0) {
+    cat(sprintf("**Coppie TRAV+TRBV condivise in ≥2 pazienti negli stage A/B: %d**\n\n", nrow(cat2)))
+    knitr::kable(
+      cat2 %>% select(pair_vgene, pazienti, n_cells_Bo, n_cells_Ca, n_cells_Me,
+                      n_cloni_distinti, stages),
+      caption="Tabella 14A. Categoria 2 — Coppie V-gene shared in stage di trattamento (A/B).",
+      col.names=c("Coppia V-gene","Pazienti","Cellule Bo","Cellule Ca","Cellule Me",
+                  "N cloni distinti","Stage")
+    )
+    cat("\n\n> **Interpretazione**: i numeri di cellule sono molto bassi (Ca-A: 8 cellule totali, Me-B: 7 cellule genuine). Lo sharing osservato in A/B è biologicamente debole a causa della scarsità dei dati post-decontaminazione per Ca e Me.\n\n")
+  } else {
+    cat("**Coppie V-gene shared in A/B (≥2 paz.): 0**\n\n")
   }
 } else {
-  cat("⚠ 14_shared_chains.xlsx non trovato — esegui prima 14_shared_chains.R")
+  cat("⚠ 14_shared_chains.xlsx non trovato")
 }
 ```
 
 ```{r fig14a, echo=FALSE, out.width="90%"}
-show_fig("Fig14a_shared_vgenes_overview.png")
+show_fig("Fig14a_cat2_shared_AB.png")
 ```
 
-**Figura 14A.** Panoramica del sharing delle famiglie V-gene tra i tre pazienti, ai tre livelli (TRBV, TRAV, coppia). Ogni barra mostra quante famiglie sono private (1 paziente), condivise tra 2 o presenti in tutti e 3.
+**Figura 14A.** Bubble plot delle coppie TRAV+TRBV condivise in ≥2 pazienti negli stage di trattamento (A/B). Dimensione = n cellule per paziente.
+
+## Risultati — Categoria 3: Pre-esistenti in I, mantenute/espanse in A/B
+
+```{r res14_cat3, echo=FALSE}
+if (file.exists(f14)) {
+  cat3 <- tryCatch(read_xlsx(f14, sheet="03_Cat3_maintained_I_AB"), error=function(e) NULL)
+  ovlp <- tryCatch(read_xlsx(f14, sheet="06_Overlap_Cat2_Cat3"),    error=function(e) NULL)
+
+  if (!is.null(cat3) && nrow(cat3) > 0) {
+    cat(sprintf("**Coppie pre-esistenti in I di ≥2 paz. e presenti in A/B: %d**\n\n", nrow(cat3)))
+
+    # Top 15 per FC Bo
+    cat3_show <- cat3 %>%
+      arrange(desc(n_paz_I), desc(FC_Bo)) %>%
+      head(15) %>%
+      mutate(FC_Bo = round(FC_Bo, 1)) %>%
+      select(pair_vgene, pazienti_in_I, n_paz_I, pazienti_in_AB,
+             n_cells_I_Bo, n_cells_AB_Bo, FC_Bo,
+             n_cells_I_Ca, n_cells_I_Me)
+
+    knitr::kable(
+      cat3_show,
+      caption="Tabella 14B. Categoria 3 — Top 15 coppie pre-esistenti in I (≥2 paz.) e presenti in A/B (prime 15 per FC Bo).",
+      col.names=c("Coppia V-gene","Paz. in I","N paz. I","Paz. in A/B",
+                  "Cellule I Bo","Cellule A/B Bo","FC Bo",
+                  "Cellule I Ca","Cellule I Me")
+    )
+
+    cat("\n\n")
+
+    # Quante in tutti e 3 i pazienti nell'infusione?
+    n_all3 <- sum(cat3$n_paz_I == 3, na.rm=TRUE)
+    cat(sprintf("Di cui presenti in I di **tutti e 3 i pazienti**: **%d coppie**\n\n", n_all3))
+
+    # Riepilogo overlap
+    if (!is.null(ovlp) && nrow(ovlp) > 0) {
+      cat(sprintf("**Overlap Cat2 ∩ Cat3** (shared in A/B E pre-esistenti in I): **%d coppie**\n\n", nrow(ovlp)))
+      knitr::kable(
+        ovlp %>% select(pair_vgene, pazienti_in_I, pazienti_in_AB, FC_Bo),
+        caption="Tabella 14C. Coppie in entrambe Cat2 e Cat3.",
+        col.names=c("Coppia V-gene","Paz. in I","Paz. in A/B","FC Bo")
+      )
+    }
+  }
+}
+```
 
 ```{r fig14b, echo=FALSE, out.width="100%"}
-show_fig("Fig14b_trbv_usage_by_patient.png")
+show_fig("Fig14b_cat3_preexisting.png")
 ```
 
-**Figura 14B.** Uso delle TRBV macrofamiglie per paziente (top 20 per cellule totali). Trasparenza proporzionale al livello di sharing: opacità piena = presente in tutti e 3 i pazienti.
+**Figura 14B.** Categoria 3 — Coppie pre-esistenti nel prodotto di infusione (I) di ≥2 pazienti e osservate in A/B. Per ogni paziente: cellule in I vs A/B.
 
-```{r fig14c, echo=FALSE, out.width="100%"}
-show_fig("Fig14c_shared_pairs_all3_bubble.png")
+```{r fig14c, echo=FALSE, out.width="80%"}
+show_fig("Fig14c_overlap_cat2_cat3.png")
 ```
 
-**Figura 14C.** Bubble plot delle coppie TRAV+TRBV condivise in tutti e 3 i pazienti. Dimensione = n cellule per paziente. Nota: le CDR3 sono diverse tra pazienti — stessa struttura V-gene, cloni diversi.
+**Figura 14C.** Overlap tra Categoria 2 (shared in A/B) e Categoria 3 (pre-esistenti in I→A/B).
+
+## Risultati — TRBV frequenze relative in A/B
+
+L'analisi a coppie TRAV+TRBV soffre di scarsa potenza statistica per Ca e Me. Aggregando solo sulla catena beta (TRBV) e usando **frequenze relative** (normalizzate per il totale cellule per paziente), si ottiene un confronto più robusto tra pazienti nonostante le diverse dimensioni campionarie.
+
+```{r res14_trbv_freq, echo=FALSE}
+if (file.exists(f14)) {
+  trbv_freq <- tryCatch(read_xlsx(f14, sheet="07_TRBV_freq_AB"), error=function(e) NULL)
+  if (!is.null(trbv_freq) && nrow(trbv_freq) > 0) {
+    shared_trbv <- trbv_freq %>% dplyr::filter(n_paz_present >= 2) %>%
+      dplyr::arrange(desc(n_paz_present), desc(Bo_pct + Ca_pct + Me_pct))
+    cat(sprintf("**TRBV macrofamiglie presenti in ≥2 pazienti in A/B (freq. relativa): %d**\n\n",
+                nrow(shared_trbv)))
+    knitr::kable(
+      shared_trbv,
+      caption="Tabella 14D. Frequenza relativa (%) delle TRBV in stage A/B per paziente. Totali: Bo=1951 celle, Ca=8 celle, Me=7 celle genuine.",
+      col.names=c("TRBV","N paz. presenti","Bo (%)","Ca (%)","Me (%)")
+    )
+    cat("\n\n> **Nota statistica**: Ca-A conta 8 cellule totali e Me-B 7 cellule genuine post-decontaminazione. Ogni singola cellula in Me equivale al 14.3% del repertorio — gli intervalli di confidenza per le frequenze di Ca e Me sono molto ampi e i valori devono essere interpretati con cautela.\n\n")
+  }
+}
+```
+
+```{r fig14d, echo=FALSE, out.width="100%"}
+show_fig("Fig14d_trbv_freq_AB_shared.png")
+```
+
+**Figura 14D.** Frequenza relativa delle TRBV macrofamiglie negli stage di trattamento (A/B) per i pazienti in cui sono presenti (≥2 pazienti). La dimensione del punto indica le cellule assolute. Il segnale più coerente è **TRBV7**: Bo=27.7%, Me=28.6% — circa 1 cellula su 4 in entrambi i pazienti utilizza questa famiglia beta.
+
+## Interpretazione biologica
+
+La Categoria 3 mostra che le coppie TRAV12+TRBV7 e TRAV12+TRBV6 erano pre-esistenti nel prodotto di infusione di **tutti e 3 i pazienti** e vengono espanse massivamente solo in Bo (FC=25x e 22.5x). L'analisi per frequenza relativa della catena beta aggiunge un secondo livello: **TRBV7 rappresenta ~28% del repertorio di trattamento sia in Bo che in Me** — la frequenza è quasi identica tra i due pazienti nonostante la diversa profondità di sequenziamento. Questo è il pattern cross-paziente più consistente osservato nell'analisi.
+
+Il limite principale rimane il ridottissimo numero di cellule genuine per Ca (8) e Me (7) negli stage di trattamento, che non permette inferenza statistica robusta. Il segnale su TRBV7 è biologicamente suggestivo ma andrebbe confermato con dataset più profondi.
 
 ---
 
@@ -302,9 +429,11 @@ $$\text{FC}_{I \to B} = \frac{p_i^{(B)}}{p_i^{(I)}}$$
 
 - **FC ≥ 2**: coppia V-gene espansa
 - **FC < 1**: contratta
-- **freq_I = 0**: "De novo in B" (non rilevata nel prodotto di infusione)
+- **freq_I = 0, freq_B > 0**: categoria "Non rilevato in I" — assenza in I attribuita ad artefatto di campionamento (Bo-I ha in media 2.8 cellule per coppia V-gene), non a emergenza biologica de novo. FC impostato a NA.
 
 L'uso della frequenza relativa normalizza per la diversa profondità di sequenziamento tra stage.
+
+> **Nota critica su Me stage B**: dopo la decontaminazione, Me-B conta solo 7 cellule genuine. Tutti i valori FC e di espansione per Me sono statisticamente non affidabili e non devono essere interpretati biologicamente. L'analisi di espansione è affidabile solo per **Bo**.
 
 ## Risultati
 
@@ -389,10 +518,11 @@ show_fig("Fig15d_clonality_comparison.png")
 
 | Analisi | Risultato | Messaggio biologico |
 |---------|-----------|---------------------|
+| **Contaminazione** | Me-B: 97% cellule rimosse (252/259); 6 cloni condivisi tra pazienti | Cross-contaminazione manufatturiera Bo→Me; Me-B inutilizzabile per espansione |
 | **12** | Fenotipo delle cellule per coppia V-gene degli espansi Bo | Caratterizzazione funzionale per template V-gene |
-| **13** | 0 coppie V-gene in tutti e 3 negli stage A/B | Ca (3 record in A) e Me (7 in B) troppo rari per overlap; vedere Analisi 14 |
-| **14** | 24 coppie TRAV+TRBV in tutti e 3 (tutti stage) | Template strutturale condiviso — CDR3 diversi, antigen specificity distinta |
-| **15** | Simpson's Bo: 0.010 (I) → 0.051 (B) | Oligoclonalizzazione in Bo correlata con risposta; Ca/Me stabili |
+| **13** | 0 coppie V-gene in tutti e 3 negli stage A/B | Ca (8 cellule in A) e Me (7 cellule genuine in B) insufficienti per overlap |
+| **14** | Cat2: 4 coppie shared in A/B; Cat3: 44 pre-esistenti in I→A/B (top: TRAV12+TRBV7 FC=25x, TRAV12+TRBV6 FC=22.5x in Bo) | Pre-esistenti in I di tutti e 3 i paz., espanse solo in Bo — selezione paziente-specifica |
+| **15** | Simpson's Bo: 0.010 (I) → 0.051 (B) | Oligoclonalizzazione in Bo correlata con risposta; analisi FC affidabile solo per Bo |
 
 ## File prodotti
 
