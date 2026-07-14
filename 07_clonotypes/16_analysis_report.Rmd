@@ -1,0 +1,417 @@
+---
+title: "CAR-T Clonotype Analysis — Report"
+subtitle: "Analisi 12–15: fenotipo, sharing e clonalità (unità: coppie TRAV+TRBV macrofamiglia)"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  word_document:
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.width = 10, fig.height = 6, dpi = 150)
+suppressMessages({
+  library(dplyr); library(tidyr); library(ggplot2)
+  library(readxl); library(knitr); library(scales)
+})
+
+TAB <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Code/07_clonotypes/results/tables"
+FIG <- "/Users/federicadannunzio/Library/CloudStorage/GoogleDrive-federica.dannunzio@uniroma1.it/Drive condivisi/caruana-project/CART/Code/07_clonotypes/results/figures"
+
+fig <- function(name) file.path(FIG, name)
+tab <- function(name) file.path(TAB, name)
+
+show_fig <- function(name) {
+  p <- fig(name)
+  if (file.exists(p)) knitr::include_graphics(p) else
+    cat(paste0("⚠ ", name, " non ancora generata"))
+}
+```
+
+---
+
+# Contesto
+
+Questo report documenta le analisi clonotipi CAR-T (script 12–15) su dati scRNA-seq di tre pazienti leucemici trattati con terapia CAR-T:
+
+| Paziente | Outcome clinico | Stage disponibili |
+|----------|-----------------|-------------------|
+| **Bo**   | Espansione massiva (risposta completa) | I, A, B |
+| **Ca**   | Fallimento completo (no CAR+ in B)    | I, A    |
+| **Me**   | Persistenza parziale                  | I, B    |
+
+**Unità di analisi principale**: coppia TRAV+TRBV macrofamiglia, definita come:
+
+$$\text{macro}(x) = \text{rimuovi suffisso allelico da } x \quad (\text{es. TRAV12-1} \to \text{TRAV12})$$
+
+$$\text{pair\_vgene} = \text{macro(TRA\_v\_gene)} + \text{``} + \text{''} + \text{macro(TRB\_v\_gene)}$$
+
+**Motivazione**: 0 sequenze CDR3 (alpha, beta o coppie) sono condivise tra pazienti dopo il filtro di decontaminazione. Il livello di sharing biologicamente rilevante è quello delle famiglie V-gene, come mostrato in Fig. 11 (bubble dotplot). Cellule di pazienti diversi possono usare la stessa coppia TRAV+TRBV con CDR3 diverse — stesso template strutturale, antigen specificity diversa.
+
+**Filtro decontaminazione**: 6 coppie con CDR3 nucleotidica (CDR3_nt) identica tra pazienti sono state rimosse. Bo e Me hanno ricevuto lotti CAR-T distinti — CDR3_nt identica tra pazienti indica cross-contaminazione manufatturiera, non biologia condivisa.
+
+---
+
+# Analisi 12 — Fenotipo delle cellule per coppia V-gene degli espansi di Bo
+
+## Obiettivo
+
+Caratterizzare lo stato funzionale delle cellule che usano le stesse coppie TRAV+TRBV dei cloni espansi in Bo stage B, in ciascun paziente e stage. Risponde alla domanda: *le cellule con le stesse famiglie V-gene di Bo espanso — che fenotipo hanno in Ca e Me?*
+
+## Metodo
+
+1. Identificazione delle coppie TRAV+TRBV macrofamiglia dei cloni espansi in Bo stage B (da `RISULTATI_expansion_dynamics.xlsx`, sheet "02_Cloni_espansi_in_B")
+2. Caricamento oggetti Seurat annotati per recuperare `cell_type` per ogni cellula
+3. Join barcodes VDJ ↔ metadati Seurat per paziente + barcode
+4. Mappa `cell_type` → 4 stati funzionali:
+   - **Naive-like**: Naive CD4+/CD8+ T cells
+   - **Memory-like**: Memory T cells, Th1/Th2/Th17/Tfh cells
+   - **Effector**: Effector CD4+ T cells, Cytotoxic CD8+ T cells
+   - **Regulatory**: Tregs
+
+## Risultati
+
+```{r res12, echo=FALSE}
+f12 <- tab("12_clone_phenotype.xlsx")
+if (file.exists(f12)) {
+  sheets12 <- readxl::excel_sheets(f12)
+  cat("Sheet disponibili:", paste(sheets12, collapse=", "), "\n\n")
+
+  if ("Fenotipo_aggregato_per_pair" %in% sheets12) {
+    bar_data <- read_xlsx(f12, sheet="Fenotipo_aggregato_per_pair")
+    tab12 <- bar_data %>%
+      group_by(patient, functional_state) %>%
+      summarise(n_cells=sum(n_cells, na.rm=TRUE), .groups="drop") %>%
+      group_by(patient) %>%
+      mutate(pct=round(100*n_cells/sum(n_cells),1)) %>%
+      ungroup() %>%
+      arrange(patient, desc(pct))
+    knitr::kable(tab12,
+                 caption="Tabella 12. Stato funzionale (tutti gli stage combinati) per le coppie V-gene degli espansi Bo.",
+                 col.names=c("Paziente","Stato funzionale","N cellule","%"))
+  }
+
+  if ("Coppie_espansi_Bo" %in% sheets12) {
+    bo_pairs <- read_xlsx(f12, sheet="Coppie_espansi_Bo")
+    cat(sprintf("\n\nCoppie V-gene degli espansi Bo: **%d**\n\n", nrow(bo_pairs)))
+    knitr::kable(head(bo_pairs, 10),
+                 caption="Tabella 12B. Top 10 coppie V-gene dei cloni espansi in Bo stage B.",
+                 col.names=c("Coppia V-gene","N cloni espansi","N cellule Bo-B"))
+  }
+} else {
+  cat("⚠ 12_clone_phenotype.xlsx non trovato — esegui prima 12_clone_phenotype.R")
+}
+```
+
+```{r fig12a, echo=FALSE, out.width="100%"}
+show_fig("Fig12a_vgene_pair_phenotype_heatmap.png")
+```
+
+**Figura 12A.** Heatmap dello stato funzionale per coppia V-gene × paziente × stage. Ogni pannello = uno stato funzionale. Colori = proporzione di cellule in quello stato. Solo le top 10 coppie V-gene degli espansi Bo sono mostrate.
+
+```{r fig12b, echo=FALSE, out.width="100%"}
+show_fig("Fig12b_vgene_pair_phenotype_bar.png")
+```
+
+**Figura 12B.** Distribuzione dello stato funzionale per coppia V-gene × paziente (tutti gli stage combinati). Ogni pannello = una coppia V-gene.
+
+---
+
+# Analisi 13 — Coppie V-gene condivise tra i pazienti negli stage di trattamento (A/B)
+
+## Obiettivo
+
+Verificare se esistono coppie TRAV+TRBV macrofamiglia condivise tra **tutti e 3 i pazienti** negli stage di trattamento:
+
+- Bo: stage A o B
+- Ca: stage A (Ca non ha cellule CAR+ in stage B)
+- Me: stage B (Me non ha stage A)
+
+## Metodo
+
+1. Filtro stage di trattamento per paziente
+2. Per ogni coppia `pair_vgene`, conta in quanti pazienti appare
+3. Per ciascuna coppia: n_cells per paziente, n_cloni CDR3 distinti, link a espansione Bo
+
+**Nota**: Le CDR3 sono DIVERSE tra pazienti — stessa famiglia V-gene, cloni diversi.
+
+## Risultati
+
+```{r res13, echo=FALSE}
+f13 <- tab("13_shared_clones_AB.xlsx")
+if (file.exists(f13)) {
+  sheets13 <- readxl::excel_sheets(f13)
+
+  all_pairs <- tryCatch(read_xlsx(f13, sheet="04_Tutte_coppie_AB"), error=function(e) NULL)
+  sh3 <- tryCatch(read_xlsx(f13, sheet="01_Coppie_tutti_3_pazienti"), error=function(e) NULL)
+  sh2 <- tryCatch(read_xlsx(f13, sheet="02_Coppie_2_pazienti"), error=function(e) NULL)
+
+  if (!is.null(all_pairs)) {
+    summ <- all_pairs %>%
+      count(n_pazienti) %>%
+      mutate(condivisione=case_when(
+        n_pazienti==3 ~ "Tutti e 3",
+        n_pazienti==2 ~ "Esattamente 2",
+        TRUE          ~ "Private (1 paz.)"
+      ))
+    knitr::kable(summ %>% select(condivisione, n),
+                 caption="Tabella 13A. Sharing delle coppie TRAV+TRBV negli stage A/B.",
+                 col.names=c("Condivisione","N coppie V-gene"))
+  }
+
+  cat("\n\n")
+
+  if (!is.null(sh3) && !"nota" %in% colnames(sh3) && nrow(sh3) > 0) {
+    knitr::kable(sh3 %>% select(pair_vgene, pazienti, n_cells_Bo, n_cells_Ca, n_cells_Me,
+                                 n_cloni_Bo, n_cloni_Ca, n_cloni_Me, espansa_in_Bo),
+                 caption="Tabella 13B. Coppie V-gene condivise tra tutti e 3 i pazienti in stage A/B.",
+                 col.names=c("Coppia V-gene","Pazienti","Cellule Bo","Cellule Ca","Cellule Me",
+                             "Cloni Bo","Cloni Ca","Cloni Me","Espansa in Bo"))
+  } else {
+    cat("**Coppie V-gene in tutti e 3 i pazienti (stage A/B): 0**\n\n")
+    cat("Interpretazione: Ca ha solo 3 record in stage A e Me 7 in stage B —\n")
+    cat("la sovrapposizione è insufficiente per trovare coppie V-gene condivise\n")
+    cat("in tutti e 3 simultaneamente. Vedere Analisi 14 per sharing su tutti gli stage.\n\n")
+    if (!is.null(sh2) && nrow(sh2) > 0) {
+      cat(sprintf("**Coppie V-gene condivise tra 2 pazienti in A/B: %d**\n\n", nrow(sh2)))
+      knitr::kable(sh2 %>% select(pair_vgene, pazienti, n_cells_Bo, n_cells_Ca, n_cells_Me),
+                   caption="Tabella 13C. Coppie V-gene condivise tra 2 pazienti in stage A/B.",
+                   col.names=c("Coppia V-gene","Pazienti","Cellule Bo","Cellule Ca","Cellule Me"))
+    }
+  }
+} else {
+  cat("⚠ 13_shared_clones_AB.xlsx non trovato — esegui prima 13_shared_clones_AB.R")
+}
+```
+
+```{r fig13, echo=FALSE, out.width="100%"}
+show_fig("Fig13_shared_vgene_pairs_AB.png")
+```
+
+**Figura 13.** (A) Panoramica del sharing delle coppie TRAV+TRBV negli stage di trattamento. (B) Bubble plot delle coppie condivise tra i 3 pazienti (se presenti).
+
+---
+
+# Analisi 14 — Famiglie V-gene condivise tra i tre pazienti (tutti gli stage)
+
+## Obiettivo
+
+Identificare quali macrofamiglie TRBV, TRAV e coppie TRAV+TRBV compaiono in più di un paziente, considerando tutti gli stage (I + A + B). Questo fornisce la visione più ampia del repertorio V-gene condiviso.
+
+## Metodo
+
+Tre livelli di analisi:
+
+1. **TRBV macrofamiglia** (es. TRBV7): in quanti pazienti appare?
+2. **TRAV macrofamiglia** (es. TRAV12): in quanti pazienti appare?
+3. **Coppia TRAV+TRBV** (es. TRAV12 + TRBV7): in quanti pazienti appare?
+
+Per ciascun livello: n cellule per paziente, n CDR3 distinte (cloni diversi che usano la stessa V-gene family), stage in cui compare.
+
+## Risultati
+
+```{r res14, echo=FALSE}
+f14 <- tab("14_shared_chains.xlsx")
+if (file.exists(f14)) {
+  # TRBV in tutti e 3
+  trbv3 <- tryCatch(read_xlsx(f14, sheet="01_TRBV_tutti_3_pazienti"), error=function(e) NULL)
+  # TRAV in tutti e 3
+  trav3 <- tryCatch(read_xlsx(f14, sheet="03_TRAV_tutti_3_pazienti"), error=function(e) NULL)
+  # Coppie in tutti e 3
+  cop3 <- tryCatch(read_xlsx(f14, sheet="05_Coppie_tutti_3_pazienti"), error=function(e) NULL)
+  # Coppie in 2
+  cop2 <- tryCatch(read_xlsx(f14, sheet="06_Coppie_2_pazienti"), error=function(e) NULL)
+
+  # Riepilogo conteggi
+  summ14 <- tibble(
+    Livello = c("TRBV macrofamiglia","TRAV macrofamiglia","Coppia TRAV+TRBV"),
+    `Tutti e 3` = c(if(!is.null(trbv3)) nrow(trbv3) else NA,
+                    if(!is.null(trav3)) nrow(trav3) else NA,
+                    if(!is.null(cop3)) nrow(cop3) else NA),
+    `2 pazienti` = c(NA, NA, if(!is.null(cop2)) nrow(cop2) else NA)
+  )
+  knitr::kable(summ14,
+               caption="Tabella 14A. Riepilogo sharing famiglie V-gene tra pazienti (tutti gli stage).")
+
+  cat("\n\n")
+
+  if (!is.null(trbv3) && nrow(trbv3) > 0) {
+    knitr::kable(trbv3 %>% select(macro_TRB, n_cells_Bo, n_cells_Ca, n_cells_Me, n_cloni_distinti),
+                 caption=sprintf("Tabella 14B. TRBV macrofamiglie in tutti e 3 i pazienti (N=%d).", nrow(trbv3)),
+                 col.names=c("TRBV","Cellule Bo","Cellule Ca","Cellule Me","N cloni CDR3 distinti"))
+  }
+
+  cat("\n\n")
+
+  if (!is.null(cop3) && nrow(cop3) > 0) {
+    knitr::kable(head(cop3, 15) %>%
+                   select(pair_vgene, n_cells_Bo, n_cells_Ca, n_cells_Me, n_cloni_distinti),
+                 caption=sprintf("Tabella 14C. Coppie TRAV+TRBV in tutti e 3 i pazienti — N=%d (prime 15).", nrow(cop3)),
+                 col.names=c("Coppia TRAV+TRBV","Cellule Bo","Cellule Ca","Cellule Me","N cloni CDR3 distinti"))
+  }
+} else {
+  cat("⚠ 14_shared_chains.xlsx non trovato — esegui prima 14_shared_chains.R")
+}
+```
+
+```{r fig14a, echo=FALSE, out.width="90%"}
+show_fig("Fig14a_shared_vgenes_overview.png")
+```
+
+**Figura 14A.** Panoramica del sharing delle famiglie V-gene tra i tre pazienti, ai tre livelli (TRBV, TRAV, coppia). Ogni barra mostra quante famiglie sono private (1 paziente), condivise tra 2 o presenti in tutti e 3.
+
+```{r fig14b, echo=FALSE, out.width="100%"}
+show_fig("Fig14b_trbv_usage_by_patient.png")
+```
+
+**Figura 14B.** Uso delle TRBV macrofamiglie per paziente (top 20 per cellule totali). Trasparenza proporzionale al livello di sharing: opacità piena = presente in tutti e 3 i pazienti.
+
+```{r fig14c, echo=FALSE, out.width="100%"}
+show_fig("Fig14c_shared_pairs_all3_bubble.png")
+```
+
+**Figura 14C.** Bubble plot delle coppie TRAV+TRBV condivise in tutti e 3 i pazienti. Dimensione = n cellule per paziente. Nota: le CDR3 sono diverse tra pazienti — stessa struttura V-gene, cloni diversi.
+
+---
+
+# Analisi 15 — Clonalità relativa ed espansione
+
+## Obiettivo
+
+Quantificare la struttura clonale del repertorio CAR-T per ciascun paziente e stage, e misurare l'espansione relativa delle coppie V-gene rispetto al prodotto di infusione (stage I = baseline).
+
+## Formule utilizzate
+
+### Clonalità V-gene (Simpson's index)
+
+$$C_{\text{vgene}} = \sum_i p_i^2$$
+
+dove $p_i$ = frequenza relativa della coppia V-gene $i$ nel paziente × stage.
+Interpretazione: 0 = tutte le coppie ugualmente usate → 1 = una coppia domina.
+
+### Clonalità normalizzata (indice complementare)
+
+$$\text{Clonalità norm.} = 1 - \frac{H}{\log N}$$
+
+dove $H = -\sum_i p_i \log p_i$ (Shannon entropy), $N$ = numero di coppie V-gene uniche.
+
+### Espansione relativa (fold-change)
+
+$$\text{FC}_{I \to B} = \frac{p_i^{(B)}}{p_i^{(I)}}$$
+
+- **FC ≥ 2**: coppia V-gene espansa
+- **FC < 1**: contratta
+- **freq_I = 0**: "De novo in B" (non rilevata nel prodotto di infusione)
+
+L'uso della frequenza relativa normalizza per la diversa profondità di sequenziamento tra stage.
+
+## Risultati
+
+```{r res15, echo=FALSE}
+f15 <- tab("15_relative_clonality.xlsx")
+if (file.exists(f15)) {
+  div_vg  <- tryCatch(read_xlsx(f15, sheet="01_Clonalita_Vgene"),  error=function(e) NULL)
+  div_cdr <- tryCatch(read_xlsx(f15, sheet="02_Clonalita_CDR3"),    error=function(e) NULL)
+  fc_df   <- tryCatch(read_xlsx(f15, sheet="03_FC_Vgene_pairs"),    error=function(e) NULL)
+  dom_df  <- tryCatch(read_xlsx(f15, sheet="04_Coppie_dominanti_per_stage"), error=function(e) NULL)
+
+  if (!is.null(div_vg)) {
+    knitr::kable(
+      div_vg %>%
+        select(patient, stage, n_pairs, clonality_norm, simpson, dominance) %>%
+        mutate(dominance=scales::percent(dominance, accuracy=0.1),
+               simpson=round(simpson,4),
+               clonality_norm=round(clonality_norm,4)) %>%
+        arrange(patient, stage),
+      caption="Tabella 15A. Indici di clonalità V-gene per paziente × stage.",
+      col.names=c("Paziente","Stage","N coppie V-gene","Clonalità norm.","Simpson Σp²","Dominanza top pair")
+    )
+  }
+
+  cat("\n\n")
+
+  if (!is.null(fc_df)) {
+    cat_summ <- fc_df %>%
+      filter(!is.na(categoria), categoria!="Assente") %>%
+      count(patient, categoria) %>%
+      arrange(patient, categoria)
+    knitr::kable(cat_summ,
+                 caption="Tabella 15B. Categorie di espansione V-gene (I→B) per paziente.",
+                 col.names=c("Paziente","Categoria","N coppie V-gene"))
+  }
+
+  cat("\n\n")
+
+  if (!is.null(dom_df)) {
+    knitr::kable(
+      dom_df %>%
+        mutate(freq=scales::percent(freq, accuracy=0.1)) %>%
+        arrange(patient, stage, rank),
+      caption="Tabella 15C. Top 3 coppie V-gene dominanti per paziente × stage.",
+      col.names=c("Paziente","Stage","Rank","Coppia V-gene","N cellule","Freq rel.")
+    )
+  }
+} else {
+  cat("⚠ 15_relative_clonality.xlsx non trovato — esegui prima 15_relative_clonality.R")
+}
+```
+
+```{r fig15a, echo=FALSE, out.width="100%"}
+show_fig("Fig15a_vgene_clonality_stages.png")
+```
+
+**Figura 15A.** Indici di clonalità V-gene attraverso gli stage I → A → B. (a) Simpson's Σp²; (b) Dominanza top pair; (c) N coppie V-gene uniche.
+
+```{r fig15b, echo=FALSE, out.width="100%"}
+show_fig("Fig15b_vgene_expansion_fc.png")
+```
+
+**Figura 15B.** log₂(FC I→B) per le top 10 coppie V-gene in stage B, per paziente. Linea tratteggiata = FC=2.
+
+```{r fig15c, echo=FALSE, out.width="100%"}
+show_fig("Fig15c_vgene_rank_frequency.png")
+```
+
+**Figura 15C.** Distribuzione rank-frequenza delle coppie V-gene per stage. Curva più ripida in B = repertorio più focalizzato su poche coppie.
+
+```{r fig15d, echo=FALSE, out.width="100%"}
+show_fig("Fig15d_clonality_comparison.png")
+```
+
+**Figura 15D.** Confronto clonalità Simpson a livello V-gene pair (linea continua) vs livello CDR3 clone (linea tratteggiata).
+
+---
+
+# Riepilogo Generale
+
+## Messaggi biologici chiave
+
+| Analisi | Risultato | Messaggio biologico |
+|---------|-----------|---------------------|
+| **12** | Fenotipo delle cellule per coppia V-gene degli espansi Bo | Caratterizzazione funzionale per template V-gene |
+| **13** | 0 coppie V-gene in tutti e 3 negli stage A/B | Ca (3 record in A) e Me (7 in B) troppo rari per overlap; vedere Analisi 14 |
+| **14** | 24 coppie TRAV+TRBV in tutti e 3 (tutti stage) | Template strutturale condiviso — CDR3 diversi, antigen specificity distinta |
+| **15** | Simpson's Bo: 0.010 (I) → 0.051 (B) | Oligoclonalizzazione in Bo correlata con risposta; Ca/Me stabili |
+
+## File prodotti
+
+```
+07_clonotypes/results/
+├── figures/
+│   ├── Fig12a_vgene_pair_phenotype_heatmap.png
+│   ├── Fig12b_vgene_pair_phenotype_bar.png
+│   ├── Fig13_shared_vgene_pairs_AB.png
+│   ├── Fig14a_shared_vgenes_overview.png
+│   ├── Fig14b_trbv_usage_by_patient.png
+│   ├── Fig14c_shared_pairs_all3_bubble.png
+│   ├── Fig15a_vgene_clonality_stages.png
+│   ├── Fig15b_vgene_expansion_fc.png
+│   ├── Fig15c_vgene_rank_frequency.png
+│   └── Fig15d_clonality_comparison.png
+└── tables/
+    ├── 12_clone_phenotype.xlsx
+    ├── 13_shared_clones_AB.xlsx
+    ├── 14_shared_chains.xlsx
+    └── 15_relative_clonality.xlsx
+```

@@ -197,62 +197,7 @@ ggsave(file.path(OUT, "Fig4_top_expanded_clones.png"),
 message("Fig4 saved")
 
 # ==============================================================================
-# FIGURA 5 — VDJdb: specificita' antigenica per paziente
-# ==============================================================================
-vdjdb <- read_xlsx(file.path(TAB, "VDJdb_search_results.xlsx"))
-
-ag_counts <- vdjdb %>%
-  filter(!is.na(antigen.species)) %>%
-  distinct(patient, TRB_cdr3, antigen.species) %>%
-  count(patient, antigen.species) %>%
-  group_by(patient) %>%
-  mutate(pct = n / sum(n)) %>%
-  ungroup() %>%
-  mutate(
-    patient = factor(patient, levels = c("Bo", "Ca", "Me")),
-    antigen.species = fct_reorder(antigen.species, n, sum)
-  )
-
-ag_colors <- c(
-  "CMV"        = "#E64B35",
-  "SARS-CoV-2" = "#F39B7F",
-  "InfluenzaA" = "#4DBBD5",
-  "EBV"        = "#00A087",
-  "YFV"        = "#3C5488",
-  "HCV"        = "#B09C85"
-)
-
-p_ag <- ggplot(ag_counts,
-               aes(x = patient, y = n, fill = antigen.species)) +
-  geom_col(position = "stack", width = 0.55, color = "white") +
-  geom_text(aes(label = ifelse(n >= 1, n, "")),
-            position = position_stack(vjust = 0.5),
-            size = 3.5, color = "white", fontface = "bold") +
-  scale_fill_manual(values = ag_colors, name = "Antigen") +
-  scale_x_discrete(labels = PAT_LABEL) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.08))) +
-  theme_minimal(base_size = 12) +
-  theme(panel.grid.major.x = element_blank(),
-        axis.text.x = element_text(angle = 20, hjust = 1)) +
-  labs(title = "VDJdb antigen specificity matches",
-       subtitle = "N distinct CDR3b sequences with VDJdb match per patient",
-       x = NULL, y = "N matched CDR3b sequences")
-
-# Tabella: dettaglio Bo (clone dominante CMV)
-bo_top <- vdjdb %>%
-  filter(patient == "Bo") %>%
-  distinct(TRB_cdr3, antigen.species, antigen.gene, antigen.epitope, mhc.a) %>%
-  arrange(antigen.species, antigen.epitope)
-
-message("Bo VDJdb matches:\n")
-print(bo_top)
-
-ggsave(file.path(OUT, "Fig5_VDJdb_antigen_specificity.png"),
-       p_ag, width = 9, height = 6, dpi = 300, bg = "white")
-message("Fig5 saved")
-
-# ==============================================================================
-# FIGURA 6 — Panel riassuntivo: outcomes × espansione × VDJdb
+# FIGURA 5 — Panel riassuntivo: outcomes × espansione
 # ==============================================================================
 outcomes <- tibble::tribble(
   ~patient, ~car_in_I_pct, ~car_in_B_pct, ~n_expanded, ~outcome,
@@ -293,16 +238,22 @@ p_o2 <- ggplot(outcomes, aes(x = patient, y = n_expanded, fill = outcome)) +
         axis.text.x = element_text(angle = 20, hjust = 1)) +
   labs(title = "Expanded clones in B (>=5 cells, FC>=2)", x = NULL, y = "N clones")
 
-fig6 <- (p_o1 | p_o2 | p_ag) +
+fig5 <- (p_o1 | p_o2) +
   plot_layout(guides = "collect") +
   plot_annotation(
-    title    = "Figure 6 — Summary: CAR-T outcomes, clonal expansion, and antigen specificity",
+    title    = "Figure 5 — Summary: CAR-T outcomes and clonal expansion",
     subtitle = "3 patients (Bo=expansion, Ca=failure, Me=partial); timepoints I, A, B",
     tag_levels = "A"
   )
 
-ggsave(file.path(OUT, "Fig6_summary_panel.png"),
-       fig6, width = 16, height = 6, dpi = 300, bg = "white")
-message("Fig6 saved")
+ggsave(file.path(OUT, "Fig5_summary_panel.png"),
+       fig5, width = 12, height = 6, dpi = 300, bg = "white")
+message("Fig5 saved")
 
 message("\n=== TUTTI I GRAFICI SALVATI IN: ", OUT, " ===")
+# Figure prodotte:
+# Fig1_CAR_cell_overview.png
+# Fig2_contamination_report.png
+# Fig3_expansion_categories.png
+# Fig4_top_expanded_clones.png
+# Fig5_summary_panel.png

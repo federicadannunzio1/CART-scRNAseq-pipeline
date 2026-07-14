@@ -240,174 +240,6 @@ datatable(
 )
 
 # ======================================================================
-# VDJDB DOWNLOAD
-# ======================================================================
-# Scarica VDJdb 2024-06-13
-url_zip  <- "https://github.com/antigenomics/vdjdb-db/releases/download/2024-06-13/vdjdb-2024-06-13.zip"
-temp_zip <- tempfile(fileext=".zip")
-temp_dir <- tempdir()
-
-dl_ok <- tryCatch({
-  download.file(url_zip, temp_zip, mode="wb", quiet=TRUE)
-  # Verify the file is a valid zip (not an error page)
-  file.size(temp_zip) > 1e6
-}, error=function(e) { message("⚠ Download fallito: ", e$message); FALSE })
-
-if (isTRUE(dl_ok)) {
-  unzip(temp_zip, exdir=temp_dir, overwrite=TRUE)
-  vdjdb_file <- list.files(temp_dir,
-                           pattern="vdjdb.*\\.txt|vdjdb.*\\.tsv",
-                           full.names=TRUE, recursive=TRUE)[1]
-  vdjdb_raw  <- read_tsv(vdjdb_file, show_col_types=FALSE)
-  cat("VDJdb scaricato:", nrow(vdjdb_raw), "righe\n")
-  unlink(temp_zip)
-  vdjdb_ok <- TRUE
-} else {
-  message("⚠ VDJdb non disponibile — proseguo senza annotazione VDJdb (flag vdjdb_hit=FALSE)")
-  vdjdb_raw <- data.frame(species=character(), cdr3.beta=character(), v.beta=character(),
-                          j.beta=character(), cdr3.alpha=character(), v.alpha=character(),
-                          j.alpha=character(), antigen.species=character(),
-                          antigen.gene=character(), antigen.epitope=character(),
-                          stringsAsFactors=FALSE)
-  vdjdb_ok <- FALSE
-}
-
-# ======================================================================
-# VDJDB PREP
-# ======================================================================
-# Filtra su Homo sapiens e prepara DB beta e alpha
-vdjdb_hs <- vdjdb_raw %>% filter(species == "HomoSapiens")
-
-vdjdb_beta <- vdjdb_hs %>%
-  filter(!is.na(cdr3.beta), cdr3.beta != "") %>%
-  select(cdr3.beta, v.beta, j.beta,
-         antigen.species, antigen.gene, antigen.epitope,
-         any_of(c("score","mhc.a","reference.id"))) %>%
-  distinct() %>%
-  rename(TRB_cdr3 = cdr3.beta)
-
-vdjdb_alpha <- vdjdb_hs %>%
-  filter(!is.na(cdr3.alpha), cdr3.alpha != "") %>%
-  select(cdr3.alpha, v.alpha, j.alpha,
-         antigen.species, antigen.gene, antigen.epitope,
-         any_of(c("score","mhc.a","reference.id"))) %>%
-  distinct() %>%
-  rename(TRA_cdr3 = cdr3.alpha)
-
-cat("Sequenze beta nel DB:  ", n_distinct(vdjdb_beta$TRB_cdr3), "\n")
-cat("Sequenze alpha nel DB: ", n_distinct(vdjdb_alpha$TRA_cdr3), "\n")
-
-# ======================================================================
-# VDJDB SEARCH
-# ======================================================================
-# Cerca tutte le CDR3 dei cloni puliti (non solo top 10)
-all_beta  <- unique(na.omit(clean_data$TRB_cdr3))
-all_alpha <- unique(na.omit(clean_data$TRA_cdr3))
-
-cat("CDR3 beta da cercare:  ", length(all_beta), "\n")
-cat("CDR3 alpha da cercare: ", length(all_alpha), "\n\n")
-
-# Join diretto
-matches_beta <- clean_data %>%
-  distinct(patient, TRA_v_gene, TRB_v_gene,
-           TRA_cdr3, TRB_cdr3, TRA_cdr3_nt, TRB_cdr3_nt) %>%
-  inner_join(vdjdb_beta, by="TRB_cdr3") %>%
-  select(patient, TRB_v_gene, v.beta, TRA_v_gene,
-         TRB_cdr3, TRA_cdr3, TRB_cdr3_nt, TRA_cdr3_nt,
-         antigen.species, antigen.gene, antigen.epitope,
-         any_of(c("score","mhc.a")))
-
-matches_alpha <- clean_data %>%
-  distinct(patient, TRA_v_gene, TRB_v_gene,
-           TRA_cdr3, TRB_cdr3, TRA_cdr3_nt, TRB_cdr3_nt) %>%
-  inner_join(vdjdb_alpha, by="TRA_cdr3") %>%
-  select(patient, TRA_v_gene, v.alpha, TRB_v_gene,
-         TRA_cdr3, TRB_cdr3, TRA_cdr3_nt, TRB_cdr3_nt,
-         antigen.species, antigen.gene, antigen.epitope,
-         any_of(c("score","mhc.a")))
-
-cat("=== MATCH CATENA BETA ===\n")
-if (nrow(matches_beta) > 0) {
-  cat("Trovati:", nrow(matches_beta), "match su", n_distinct(matches_beta$TRB_cdr3), "CDR3 distinte\n")
-  print(matches_beta)
-} else {
-  cat("Nessun match esatto su catena beta\n")
-}
-
-cat("\n=== MATCH CATENA ALPHA ===\n")
-if (nrow(matches_alpha) > 0) {
-  cat("Trovati:", nrow(matches_alpha), "match su", n_distinct(matches_alpha$TRA_cdr3), "CDR3 distinte\n")
-  print(matches_alpha)
-} else {
-  cat("Nessun match esatto su catena alpha\n")
-}
-
-# ======================================================================
-# VDJDB LEUKEMIA
-# ======================================================================
-# Filtra specificamente per antigeni leucemici / tumorali noti
-leukemia_keywords <- c("leukemia","AML","CLL","CML","ALL","B-cell","myeloid",
-                        "WT1","PRAME","survivin","NY-ESO","MAGE","AFP","RHAMM",
-                        "CD19","CD33","CD123","FLT3","NPM1","IDH","BCMA","CD38",
-                        "tumor","cancer","lymphoma","acute")
-
-leuk_pattern <- paste(leukemia_keywords, collapse="|")
-
-leukemia_beta <- vdjdb_beta %>%
-  filter(str_detect(tolower(antigen.species), leuk_pattern) |
-         str_detect(tolower(antigen.gene),    leuk_pattern) |
-         str_detect(tolower(antigen.epitope), leuk_pattern))
-
-leukemia_alpha <- vdjdb_alpha %>%
-  filter(str_detect(tolower(antigen.species), leuk_pattern) |
-         str_detect(tolower(antigen.gene),    leuk_pattern) |
-         str_detect(tolower(antigen.epitope), leuk_pattern))
-
-cat("\nCDR3 beta nel DB associate ad antigeni leucemici/tumorali:",
-    n_distinct(leukemia_beta$TRB_cdr3), "\n")
-cat("CDR3 alpha nel DB associate ad antigeni leucemici/tumorali:",
-    n_distinct(leukemia_alpha$TRA_cdr3), "\n\n")
-
-# Cerca se i nostri cloni matchano sequenze leucemia-associate
-leuk_matches_beta <- clean_data %>%
-  distinct(patient, TRA_v_gene, TRB_v_gene, TRA_cdr3, TRB_cdr3,
-           TRA_cdr3_nt, TRB_cdr3_nt) %>%
-  inner_join(leukemia_beta, by="TRB_cdr3")
-
-leuk_matches_alpha <- clean_data %>%
-  distinct(patient, TRA_v_gene, TRB_v_gene, TRA_cdr3, TRB_cdr3,
-           TRA_cdr3_nt, TRB_cdr3_nt) %>%
-  inner_join(leukemia_alpha, by="TRA_cdr3")
-
-if (nrow(leuk_matches_beta) > 0) {
-  cat("✅ MATCH LEUCEMIA — CATENA BETA:\n")
-  print(leuk_matches_beta %>% select(patient, TRB_v_gene, TRB_cdr3, TRA_cdr3,
-                                      antigen.species, antigen.gene, antigen.epitope))
-} else {
-  cat("Nessun match esatto su beta contro antigeni leucemici in VDJdb\n")
-}
-
-if (nrow(leuk_matches_alpha) > 0) {
-  cat("\n✅ MATCH LEUCEMIA — CATENA ALPHA:\n")
-  print(leuk_matches_alpha %>% select(patient, TRA_v_gene, TRA_cdr3, TRB_cdr3,
-                                       antigen.species, antigen.gene, antigen.epitope))
-} else {
-  cat("Nessun match esatto su alpha contro antigeni leucemici in VDJdb\n")
-}
-
-# ======================================================================
-# VDJDB SAVE
-# ======================================================================
-write_xlsx(list(
-  "Matches_beta"        = if(nrow(matches_beta)>0)       matches_beta       else data.frame(nota="nessun match"),
-  "Matches_alpha"       = if(nrow(matches_alpha)>0)      matches_alpha      else data.frame(nota="nessun match"),
-  "Leukemia_beta"       = if(nrow(leuk_matches_beta)>0)  leuk_matches_beta  else data.frame(nota="nessun match"),
-  "Leukemia_alpha"      = if(nrow(leuk_matches_alpha)>0) leuk_matches_alpha else data.frame(nota="nessun match"),
-  "VDJdb_leuk_beta_ref" = leukemia_beta,
-  "VDJdb_leuk_alpha_ref"= leukemia_alpha
-), file.path(OUT_DIR, "tables", "VDJdb_search_results.xlsx"))
-
-# ======================================================================
 # FINAL SEQUENCES
 # ======================================================================
 # Top cloni per paziente (post-decontaminazione)
@@ -419,30 +251,12 @@ top_clones_clean <- clean_data %>%
   mutate(
     shared_beta  = TRB_cdr3 %in% beta_shared$TRB_cdr3,
     shared_alpha = TRA_cdr3 %in% alpha_shared$TRA_cdr3,
-    shared_both  = shared_beta & shared_alpha,
-    vdjdb_hit    = TRB_cdr3 %in% matches_beta$TRB_cdr3 |
-                   TRA_cdr3 %in% matches_alpha$TRA_cdr3,
-    leuk_hit     = TRB_cdr3 %in% leuk_matches_beta$TRB_cdr3 |
-                   TRA_cdr3 %in% leuk_matches_alpha$TRA_cdr3
+    shared_both  = shared_beta & shared_alpha
   ) %>%
-  arrange(desc(leuk_hit), desc(vdjdb_hit),
-          desc(shared_both), desc(shared_beta), desc(n_cells))
+  arrange(desc(shared_both), desc(shared_beta), desc(n_cells))
 
 write_xlsx(top_clones_clean,
            file.path(OUT_DIR, "tables", "final_clone_sequences.xlsx"))
-
-datatable(
-  top_clones_clean,
-  caption  = "Tutti i clonotipi CAR+ post-decontaminazione con annotazioni",
-  filter   = "top",
-  options  = list(pageLength=25, scrollX=TRUE),
-  rownames = FALSE
-) %>%
-  DT::formatStyle("leuk_hit",
-                  backgroundColor=DT::styleEqual(TRUE, "#FFE4E1"),
-                  fontWeight=DT::styleEqual(TRUE, "bold")) %>%
-  DT::formatStyle("shared_beta",
-                  backgroundColor=DT::styleEqual(TRUE, "#E8F5E9"))
 
 # ======================================================================
 # SUMMARY BLOCK
@@ -456,16 +270,10 @@ cat("Famiglie conservate (CDR3 beta condivisa tra pazienti):  ", nrow(beta_share
 cat("Famiglie conservate (CDR3 alpha condivisa tra pazienti): ", nrow(alpha_shared), "\n")
 cat("Clonotipi con TRA+TRB identici tra pazienti:            ", nrow(strict_shared), "\n\n")
 
-cat("Match VDJdb (tutte specificità):    beta=", nrow(matches_beta),
-    "  alpha=", nrow(matches_alpha), "\n")
-cat("Match VDJdb (leucemia/tumore):      beta=", nrow(leuk_matches_beta),
-    "  alpha=", nrow(leuk_matches_alpha), "\n\n")
-
 cat("File prodotti in:", OUT_DIR, "\n")
 cat("  tables/contamination_report.xlsx\n")
 cat("  tables/conserved_strict_TRA_TRB.xlsx\n")
 cat("  tables/conserved_beta_CDR3.xlsx\n")
 cat("  tables/conserved_alpha_CDR3.xlsx\n")
 cat("  tables/master_conserved_sequences.xlsx\n")
-cat("  tables/VDJdb_search_results.xlsx  (match + ref leucemia)\n")
 cat("  tables/final_clone_sequences.xlsx  (tabella completa con flag)\n")
